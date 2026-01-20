@@ -7,8 +7,10 @@ import (
 	"strconv"
 )
 
-const basePort = 5020
-const registerCount = 100
+const (
+	basePort     = 5020
+	registerCount = 100
+)
 
 func main() {
 
@@ -40,10 +42,8 @@ func main() {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			fmt.Println("Error al aceptar conexión:", err)
 			continue
 		}
-
 		fmt.Printf("Nueva conexión aceptada (SLAVE %d)\n", slaveID)
 		go manejarConexion(conn, slaveID, holding)
 	}
@@ -61,8 +61,9 @@ func manejarConexion(conn net.Conn, slaveID byte, holding []uint16) {
 			return
 		}
 
-		fmt.Printf("SLAVE %d request recibido:\n", slaveID)
-		imprimirHex(buffer[:n])
+		if n < 8 {
+			continue
+		}
 
 		transactionID := buffer[0:2]
 		unitID := buffer[6]
@@ -76,8 +77,13 @@ func manejarConexion(conn net.Conn, slaveID byte, holding []uint16) {
 			address := uint16(buffer[8])<<8 | uint16(buffer[9])
 			quantity := uint16(buffer[10])<<8 | uint16(buffer[11])
 
+			if int(address+quantity) > len(holding) {
+				pduResp = []byte{function | 0x80, 0x02}
+				break
+			}
+
 			byteCount := byte(quantity * 2)
-			pduResp = append([]byte{0x03, byteCount})
+			pduResp = []byte{0x03, byteCount}
 
 			for i := uint16(0); i < quantity; i++ {
 				val := holding[address+i]
@@ -102,8 +108,7 @@ func manejarConexion(conn net.Conn, slaveID byte, holding []uint16) {
 			}
 
 		default:
-			fmt.Printf("SLAVE %d función no soportada: %02X\n", slaveID, function)
-			return
+			pduResp = []byte{function | 0x80, 0x01}
 		}
 
 		length := uint16(len(pduResp) + 1)
@@ -116,17 +121,6 @@ func manejarConexion(conn net.Conn, slaveID byte, holding []uint16) {
 		}
 
 		response = append(response, pduResp...)
-
 		conn.Write(response)
-
-		fmt.Printf("SLAVE %d response enviada:\n", slaveID)
-		imprimirHex(response)
 	}
-}
-
-func imprimirHex(data []byte) {
-	for _, b := range data {
-		fmt.Printf("%02X ", b)
-	}
-	fmt.Println()
 }

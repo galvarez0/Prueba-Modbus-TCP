@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+/* ===================== ESTRUCTURAS ===================== */
+
 type ModbusRequest struct {
 	SlaveID  byte
 	Function byte
@@ -31,18 +33,22 @@ type Slave struct {
 	TransactionID uint16
 }
 
+/* ===================== VARIABLES ===================== */
+
 var (
 	slaves = make(map[byte]*Slave)
 	mutex  sync.Mutex
 )
 
+/* ===================== MAIN ===================== */
+
 func main() {
 	fmt.Println("Servidor Modbus TCP MASTER iniciado")
-
 	go iniciarHTTP()
-
 	select {}
 }
+
+/* ===================== HTTP ===================== */
 
 func iniciarHTTP() {
 	http.HandleFunc("/connect", manejarConnect)
@@ -51,6 +57,8 @@ func iniciarHTTP() {
 	fmt.Println("HTTP escuchando en :8080")
 	http.ListenAndServe(":8080", nil)
 }
+
+/* ===================== CONNECT SLAVE ===================== */
 
 func manejarConnect(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
@@ -84,8 +92,11 @@ func manejarConnect(w http.ResponseWriter, r *http.Request) {
 
 	go loopSlave(slave)
 
+	fmt.Printf("[SERVER] Slave %d conectado en %s\n", slaveID, address)
 	fmt.Fprintf(w, "Slave %d conectado\n", slaveID)
 }
+
+/* ===================== MODBUS HTTP ===================== */
 
 func manejarModbus(w http.ResponseWriter, r *http.Request) {
 
@@ -122,7 +133,7 @@ func manejarModbus(w http.ResponseWriter, r *http.Request) {
 		Response: make(chan ModbusResponse),
 	}
 
-	fmt.Printf("[SLAVE %d] enqueue request\n", payload.SlaveID)
+	fmt.Printf("[HTTP] enqueue -> SLAVE %d\n", payload.SlaveID)
 	slave.Queue <- req
 
 	select {
@@ -131,17 +142,36 @@ func manejarModbus(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, resp.Err.Error(), 500)
 			return
 		}
+
+		// LOG BINARIO REAL
+		fmt.Printf("[HTTP] respuesta SLAVE %d:\n", payload.SlaveID)
+		for _, b := range resp.Data {
+			fmt.Printf("%02X ", b)
+		}
+		fmt.Println()
+
 		w.Write(resp.Data)
+
 	case <-time.After(5 * time.Second):
 		http.Error(w, "timeout modbus", 504)
 	}
 }
 
+/* ===================== LOOP POR SLAVE ===================== */
+
 func loopSlave(slave *Slave) {
 	for req := range slave.Queue {
-		fmt.Printf("[SLAVE %d] dequeue request\n", slave.ID)
+
+		fmt.Printf("[QUEUE] dequeue SLAVE %d\n", slave.ID)
 
 		adu := construirADU(slave, req)
+
+		fmt.Printf("[TX] SLAVE %d:\n", slave.ID)
+		for _, b := range adu {
+			fmt.Printf("%02X ", b)
+		}
+		fmt.Println()
+
 		_, err := slave.Conn.Write(adu)
 		if err != nil {
 			req.Response <- ModbusResponse{Err: err}
@@ -156,10 +186,17 @@ func loopSlave(slave *Slave) {
 			continue
 		}
 
-		fmt.Printf("[SLAVE %d] response received\n", slave.ID)
+		fmt.Printf("[RX] SLAVE %d:\n", slave.ID)
+		for _, b := range buffer[:n] {
+			fmt.Printf("%02X ", b)
+		}
+		fmt.Println()
+
 		req.Response <- ModbusResponse{Data: buffer[:n]}
 	}
 }
+
+/* ===================== MODBUS BUILD ===================== */
 
 func construirADU(slave *Slave, req ModbusRequest) []byte {
 	slave.TransactionID++
