@@ -5,12 +5,15 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"sync"
 )
 
 const (
-	basePort     = 5020
+	basePort      = 5020
 	registerCount = 100
 )
+
+var shutdownOnce sync.Once
 
 func main() {
 
@@ -32,7 +35,6 @@ func main() {
 		fmt.Println("Error al iniciar listener:", err)
 		return
 	}
-	defer listener.Close()
 
 	holding := make([]uint16, registerCount)
 	for i := range holding {
@@ -42,14 +44,21 @@ func main() {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			continue
+			fmt.Printf("SLAVE %d listener cerrado\n", slaveID)
+			os.Exit(0)
 		}
+
 		fmt.Printf("Nueva conexión aceptada (SLAVE %d)\n", slaveID)
-		go manejarConexion(conn, slaveID, holding)
+		go manejarConexion(conn, listener, slaveID, holding)
 	}
 }
 
-func manejarConexion(conn net.Conn, slaveID byte, holding []uint16) {
+func manejarConexion(
+	conn net.Conn,
+	listener net.Listener,
+	slaveID byte,
+	holding []uint16,
+) {
 	defer conn.Close()
 
 	buffer := make([]byte, 260)
@@ -57,7 +66,8 @@ func manejarConexion(conn net.Conn, slaveID byte, holding []uint16) {
 	for {
 		n, err := conn.Read(buffer)
 		if err != nil {
-			fmt.Printf("SLAVE %d desconectado\n", slaveID)
+			fmt.Printf("SLAVE %d desconectado por MASTER\n", slaveID)
+			terminarProceso(listener)
 			return
 		}
 
@@ -123,4 +133,12 @@ func manejarConexion(conn net.Conn, slaveID byte, holding []uint16) {
 		response = append(response, pduResp...)
 		conn.Write(response)
 	}
+}
+
+func terminarProceso(listener net.Listener) {
+	shutdownOnce.Do(func() {
+		fmt.Println("SLAVE terminando proceso")
+		listener.Close()
+		os.Exit(0)
+	})
 }
