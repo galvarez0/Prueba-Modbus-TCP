@@ -9,11 +9,25 @@ import (
 )
 
 const (
-	basePort      = 5020
+	listenPort    = 5021
 	registerCount = 100
 )
 
-var shutdownOnce sync.Once
+/* ===================== STRUCTS ===================== */
+
+type request struct {
+	conn net.Conn
+	data []byte
+}
+
+/* ===================== GLOBALS ===================== */
+
+var (
+	shutdownOnce sync.Once
+	reqQueue     = make(chan request, 100)
+)
+
+/* ===================== MAIN ===================== */
 
 func main() {
 
@@ -25,10 +39,12 @@ func main() {
 	slaveIDInt, _ := strconv.Atoi(os.Args[1])
 	slaveID := byte(slaveIDInt)
 
-	port := basePort + slaveIDInt
-	address := fmt.Sprintf(":%d", port)
+	address := fmt.Sprintf(":%d", listenPort)
 
-	fmt.Printf("Cliente Modbus TCP iniciado (SLAVE %d) en puerto %d\n", slaveID, port)
+	fmt.Printf(
+		"Cliente Modbus TCP iniciado (SLAVE %d) escuchando en puerto %d\n",
+		slaveID, listenPort,
+	)
 
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
@@ -41,24 +57,23 @@ func main() {
 		holding[i] = uint16(i)
 	}
 
+	// Worker único (serializa Modbus)
+	go procesarRequests(slaveID, holding)
+
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			fmt.Printf("SLAVE %d listener cerrado\n", slaveID)
 			os.Exit(0)
 		}
 
-		fmt.Printf("Nueva conexión aceptada (SLAVE %d)\n", slaveID)
-		go manejarConexion(conn, listener, slaveID, holding)
+		fmt.Printf("MASTER conectado (SLAVE %d)\n", slaveID)
+		go leerSocket(conn, listener)
 	}
 }
 
-func manejarConexion(
-	conn net.Conn,
-	listener net.Listener,
-	slaveID byte,
-	holding []uint16,
-) {
+/* ===================== SOCKET READ ===================== */
+
+func leerSocket(conn net.Conn, listener net.Listener) {
 	defer conn.Close()
 
 	buffer := make([]byte, 260)
@@ -66,12 +81,31 @@ func manejarConexion(
 	for {
 		n, err := conn.Read(buffer)
 		if err != nil {
-			fmt.Printf("SLAVE %d desconectado por MASTER\n", slaveID)
+			fmt.Println("MASTER desconectado")
 			terminarProceso(listener)
 			return
 		}
 
-		if n < 8 {
+		// Copia segura del frame
+		frame := make([]byte, n)
+		copy(frame, buffer[:n])
+
+		reqQueue <- request{
+			conn: conn,
+			data: frame,
+		}
+	}
+}
+
+/* ===================== MODBUS WORKER ===================== */
+
+func procesarRequests(slaveID byte, holding []uint16) {
+	for req := range reqQueue {
+
+		buffer := req.data
+		conn := req.conn
+
+		if len(buffer) < 8 {
 			continue
 		}
 
@@ -134,6 +168,8 @@ func manejarConexion(
 		conn.Write(response)
 	}
 }
+
+/* ===================== SHUTDOWN ===================== */
 
 func terminarProceso(listener net.Listener) {
 	shutdownOnce.Do(func() {

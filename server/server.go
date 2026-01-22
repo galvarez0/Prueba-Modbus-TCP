@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -10,20 +11,11 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"encoding/binary"
+	"io"
 )
 
-/* ===================== ESTADOS ===================== */
-
-type SlaveState string
-
-const (
-	StateIdle         SlaveState = "IDLE"
-	StateBusy         SlaveState = "BUSY"
-	StateTimeout      SlaveState = "TIMEOUT"
-	StateDisconnected SlaveState = "DISCONNECTED"
-)
-
-/* ===================== ESTRUCTURAS ===================== */
+/* ===================== STRUCTS ===================== */
 
 type ModbusRequest struct {
 	SlaveID  byte
@@ -31,7 +23,6 @@ type ModbusRequest struct {
 	Address  uint16
 	Quantity uint16
 	Values   []uint16
-
 	Response chan ModbusResponse
 }
 
@@ -45,15 +36,21 @@ type Slave struct {
 	Conn          net.Conn
 	Queue         chan ModbusRequest
 	TransactionID uint16
-	State         SlaveState
-	LastActivity  time.Time
+
+	ConnectedAt time.Time
+	LastSeen    time.Time
+	Requests    uint64
+	BytesTx     uint64
+	BytesRx     uint64
 }
 
-/* ===================== VARIABLES ===================== */
+/* ===================== GLOBALS ===================== */
 
 var (
 	slaves = make(map[byte]*Slave)
 	mutex  sync.Mutex
+
+	httpServer *http.Server
 )
 
 /* ===================== MAIN ===================== */
@@ -61,21 +58,31 @@ var (
 func main() {
 	fmt.Println("Servidor Modbus TCP MASTER iniciado")
 
-	go iniciarHTTP()
-	go manejarShutdown()
+	ctx, cancel := context.WithCancel(context.Background())
 
-	select {}
+	go iniciarHTTP()
+	go manejarShutdown(cancel)
+
+	<-ctx.Done()
+	fmt.Println("Shutdown completo")
 }
 
 /* ===================== HTTP ===================== */
 
 func iniciarHTTP() {
-	http.HandleFunc("/connect", manejarConnect)
-	http.HandleFunc("/modbus", manejarModbus)
-	http.HandleFunc("/stats", manejarStats)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/connect", manejarConnect)
+	mux.HandleFunc("/modbus", manejarModbus)
+	mux.HandleFunc("/stats", manejarStats)
+	mux.HandleFunc("/list_devices", manejarStats)
+
+	httpServer = &http.Server{
+		Addr:    ":8080",
+		Handler: mux,
+	}
 
 	fmt.Println("HTTP escuchando en :8080")
-	http.ListenAndServe(":8080", nil)
+	httpServer.ListenAndServe()
 }
 
 /* ===================== CONNECT ===================== */
@@ -104,8 +111,8 @@ func manejarConnect(w http.ResponseWriter, r *http.Request) {
 		Conn:          conn,
 		Queue:         make(chan ModbusRequest, 1000),
 		TransactionID: 1,
-		State:         StateIdle,
-		LastActivity:  time.Now(),
+		ConnectedAt:   time.Now(),
+		LastSeen:      time.Now(),
 	}
 
 	mutex.Lock()
@@ -114,13 +121,14 @@ func manejarConnect(w http.ResponseWriter, r *http.Request) {
 
 	go loopSlave(slave)
 
-	fmt.Printf("[SERVER] Slave %d conectado\n", slaveID)
+	fmt.Printf("[SERVER] Slave %d conectado en %s\n", slaveID, address)
 	fmt.Fprintf(w, "Slave %d conectado\n", slaveID)
 }
 
-/* ===================== MODBUS HTTP ===================== */
+/* ===================== MODBUS ===================== */
 
 func manejarModbus(w http.ResponseWriter, r *http.Request) {
+
 	var payload struct {
 		SlaveID byte `json:"slave_id"`
 		Request struct {
@@ -174,105 +182,53 @@ func manejarModbus(w http.ResponseWriter, r *http.Request) {
 func loopSlave(slave *Slave) {
 	for req := range slave.Queue {
 
-		mutex.Lock()
-		slave.State = StateBusy
-		slave.LastActivity = time.Now()
-		mutex.Unlock()
+		fmt.Printf("[QUEUE] dequeue SLAVE %d\n", slave.ID)
 
 		adu := construirADU(slave, req)
 
-		_, err := slave.Conn.Write(adu)
-		if err != nil {
-			setSlaveDisconnected(slave)
-			req.Response <- ModbusResponse{Err: err}
-			return
+		fmt.Printf("[TX] SLAVE %d:\n", slave.ID)
+		for _, b := range adu {
+			fmt.Printf("%02X ", b)
 		}
+		fmt.Println()
 
-		buffer := make([]byte, 256)
-		slave.Conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-		n, err := slave.Conn.Read(buffer)
-
-		if err != nil {
-			mutex.Lock()
-			slave.State = StateTimeout
-			slave.LastActivity = time.Now()
-			mutex.Unlock()
-
+		if _, err := slave.Conn.Write(adu); err != nil {
 			req.Response <- ModbusResponse{Err: err}
 			continue
 		}
 
-		mutex.Lock()
-		slave.State = StateIdle
-		slave.LastActivity = time.Now()
-		mutex.Unlock()
+		slave.Conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 
-		req.Response <- ModbusResponse{Data: buffer[:n]}
+		/* ===== 1. Leer MBAP (7 bytes) ===== */
+		mbap := make([]byte, 7)
+		if _, err := io.ReadFull(slave.Conn, mbap); err != nil {
+			req.Response <- ModbusResponse{Err: err}
+			continue
+		}
+
+		length := int(binary.BigEndian.Uint16(mbap[4:6]))
+
+		/* ===== 2. Leer PDU ===== */
+		pdu := make([]byte, length-1)
+		if _, err := io.ReadFull(slave.Conn, pdu); err != nil {
+			req.Response <- ModbusResponse{Err: err}
+			continue
+		}
+
+		resp := append(mbap, pdu...)
+
+		fmt.Printf("[RX] SLAVE %d:\n", slave.ID)
+		for _, b := range resp {
+			fmt.Printf("%02X ", b)
+		}
+		fmt.Println()
+
+		req.Response <- ModbusResponse{Data: resp}
 	}
 }
 
-/* ===================== STATS ===================== */
 
-func manejarStats(w http.ResponseWriter, r *http.Request) {
-	type Stat struct {
-		SlaveID      byte       `json:"slave_id"`
-		Local        string     `json:"local"`
-		Remote       string     `json:"remote"`
-		State        SlaveState `json:"state"`
-		QueueLen     int        `json:"queue_len"`
-		LastActivity time.Time  `json:"last_activity"`
-	}
-
-	var resp []Stat
-
-	mutex.Lock()
-	for _, s := range slaves {
-		resp = append(resp, Stat{
-			SlaveID:      s.ID,
-			Local:        s.Conn.LocalAddr().String(),
-			Remote:       s.Conn.RemoteAddr().String(),
-			State:        s.State,
-			QueueLen:     len(s.Queue),
-			LastActivity: s.LastActivity,
-		})
-	}
-	mutex.Unlock()
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
-}
-
-/* ===================== SHUTDOWN ===================== */
-
-func manejarShutdown() {
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
-
-	<-ch
-	fmt.Println("\n[SERVER] Shutdown iniciado")
-
-	mutex.Lock()
-	for _, s := range slaves {
-		s.State = StateDisconnected
-		s.Conn.Close()
-		close(s.Queue)
-	}
-	mutex.Unlock()
-
-	fmt.Println("[SERVER] Shutdown completo")
-	os.Exit(0)
-}
-
-/* ===================== UTIL ===================== */
-
-func setSlaveDisconnected(slave *Slave) {
-	mutex.Lock()
-	slave.State = StateDisconnected
-	slave.LastActivity = time.Now()
-	mutex.Unlock()
-}
-
-/* ===================== MODBUS BUILD ===================== */
+/* ===================== BUILD ADU ===================== */
 
 func construirADU(slave *Slave, req ModbusRequest) []byte {
 	slave.TransactionID++
@@ -284,7 +240,9 @@ func construirADU(slave *Slave, req ModbusRequest) []byte {
 
 	switch req.Function {
 	case 0x03:
-		pdu = append(pdu, byte(req.Quantity>>8), byte(req.Quantity))
+		pdu = append(pdu,
+			byte(req.Quantity>>8), byte(req.Quantity),
+		)
 	case 0x10:
 		qty := uint16(len(req.Values))
 		pdu = append(pdu,
@@ -306,4 +264,62 @@ func construirADU(slave *Slave, req ModbusRequest) []byte {
 	}
 
 	return append(mbap, pdu...)
+}
+
+/* ===================== STATS ===================== */
+
+func manejarStats(w http.ResponseWriter, r *http.Request) {
+	type stat struct {
+		ID          byte      `json:"slave_id"`
+		RemoteAddr  string    `json:"remote_addr"`
+		ConnectedAt time.Time `json:"connected_at"`
+		LastSeen    time.Time `json:"last_seen"`
+		Requests    uint64    `json:"requests"`
+		BytesTx     uint64    `json:"bytes_tx"`
+		BytesRx     uint64    `json:"bytes_rx"`
+		UptimeSec   int64     `json:"uptime_sec"`
+	}
+
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	stats := []stat{}
+	now := time.Now()
+
+	for _, s := range slaves {
+		stats = append(stats, stat{
+			ID:          s.ID,
+			RemoteAddr:  s.Conn.RemoteAddr().String(),
+			ConnectedAt: s.ConnectedAt,
+			LastSeen:    s.LastSeen,
+			Requests:    s.Requests,
+			BytesTx:     s.BytesTx,
+			BytesRx:     s.BytesRx,
+			UptimeSec:   int64(now.Sub(s.ConnectedAt).Seconds()),
+		})
+	}
+
+	json.NewEncoder(w).Encode(stats)
+}
+
+/* ===================== SHUTDOWN ===================== */
+
+func manejarShutdown(cancel context.CancelFunc) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+
+	<-ch
+	fmt.Println("Shutdown solicitado")
+
+	if httpServer != nil {
+		httpServer.Shutdown(context.Background())
+	}
+
+	mutex.Lock()
+	for _, s := range slaves {
+		s.Conn.Close()
+	}
+	mutex.Unlock()
+
+	cancel()
 }

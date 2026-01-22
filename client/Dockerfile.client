@@ -1,0 +1,9 @@
+FROM alpine:3.20
+
+WORKDIR /app
+
+COPY modbus-client /app/modbus-client
+
+EXPOSE 5021
+
+ENTRYPOINT ["/app/modbus-client"]
