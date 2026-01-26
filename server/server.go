@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -11,11 +14,19 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	"encoding/binary"
-	"io"
 )
 
 /* ===================== STRUCTS ===================== */
+
+type ModbusHTTPPayload struct {
+	SlaveID byte `json:"slave_id"`
+	Request struct {
+		Function byte     `json:"function_code"`
+		Address  uint16   `json:"address"`
+		Length   uint16   `json:"length"`
+		Values   []uint16 `json:"values"`
+	} `json:"request"`
+}
 
 type ModbusRequest struct {
 	SlaveID  byte
@@ -51,6 +62,7 @@ var (
 	mutex  sync.Mutex
 
 	httpServer *http.Server
+	mqttClient mqtt.Client
 )
 
 /* ===================== MAIN ===================== */
@@ -60,6 +72,7 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	initMQTT()
 	go iniciarHTTP()
 	go manejarShutdown(cancel)
 
@@ -67,14 +80,47 @@ func main() {
 	fmt.Println("Shutdown completo")
 }
 
+/* ===================== MQTT ===================== */
+
+func initMQTT() {
+	opts := mqtt.NewClientOptions().
+		AddBroker("tcp://localhost:1883").
+		SetClientID("modbus-master")
+
+	opts.OnConnect = func(c mqtt.Client) {
+		fmt.Println("[MQTT] Conectado al broker")
+		c.Subscribe("modbus/request", 0, manejarMQTTRequest)
+	}
+
+	mqttClient = mqtt.NewClient(opts)
+	if token := mqttClient.Connect(); token.Wait() && token.Error() != nil {
+		panic(token.Error())
+	}
+}
+
+func manejarMQTTRequest(client mqtt.Client, msg mqtt.Message) {
+	var payload ModbusHTTPPayload
+	if err := json.Unmarshal(msg.Payload(), &payload); err != nil {
+		fmt.Println("[MQTT] JSON inválido:", err)
+		return
+	}
+
+	data, err := procesarModbus(payload)
+	if err != nil {
+		fmt.Println("[MQTT] Error:", err)
+		return
+	}
+
+	mqttClient.Publish("modbus/response", 0, false, data)
+}
+
 /* ===================== HTTP ===================== */
 
 func iniciarHTTP() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/connect", manejarConnect)
-	mux.HandleFunc("/modbus", manejarModbus)
+	mux.HandleFunc("/modbus", manejarHTTPModbus)
 	mux.HandleFunc("/stats", manejarStats)
-	mux.HandleFunc("/list_devices", manejarStats)
 
 	httpServer = &http.Server{
 		Addr:    ":8080",
@@ -85,72 +131,31 @@ func iniciarHTTP() {
 	httpServer.ListenAndServe()
 }
 
-/* ===================== CONNECT ===================== */
-
-func manejarConnect(w http.ResponseWriter, r *http.Request) {
-	id := r.URL.Query().Get("id")
-	port := r.URL.Query().Get("port")
-
-	if id == "" || port == "" {
-		http.Error(w, "faltan parametros id o port", 400)
+func manejarHTTPModbus(w http.ResponseWriter, r *http.Request) {
+	var payload ModbusHTTPPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "json inválido", 400)
 		return
 	}
 
-	var slaveID byte
-	fmt.Sscanf(id, "%d", &slaveID)
-
-	address := "127.0.0.1:" + port
-	conn, err := net.Dial("tcp", address)
+	data, err := procesarModbus(payload)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
 
-	slave := &Slave{
-		ID:            slaveID,
-		Conn:          conn,
-		Queue:         make(chan ModbusRequest, 1000),
-		TransactionID: 1,
-		ConnectedAt:   time.Now(),
-		LastSeen:      time.Now(),
-	}
-
-	mutex.Lock()
-	slaves[slaveID] = slave
-	mutex.Unlock()
-
-	go loopSlave(slave)
-
-	fmt.Printf("[SERVER] Slave %d conectado en %s\n", slaveID, address)
-	fmt.Fprintf(w, "Slave %d conectado\n", slaveID)
+	w.Write(data)
 }
 
-/* ===================== MODBUS ===================== */
+/* ===================== MODBUS CORE (FIXED) ===================== */
 
-func manejarModbus(w http.ResponseWriter, r *http.Request) {
-
-	var payload struct {
-		SlaveID byte `json:"slave_id"`
-		Request struct {
-			Function byte     `json:"function_code"`
-			Address  uint16   `json:"address"`
-			Length   uint16   `json:"length"`
-			Values   []uint16 `json:"values"`
-		} `json:"request"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, "json invalido", 400)
-		return
-	}
-
+func procesarModbus(payload ModbusHTTPPayload) ([]byte, error) {
 	mutex.Lock()
 	slave, ok := slaves[payload.SlaveID]
 	mutex.Unlock()
 
-	if !ok {
-		http.Error(w, "slave no conectado", 404)
-		return
+	if !ok || slave == nil {
+		return nil, fmt.Errorf("slave %d no conectado", payload.SlaveID)
 	}
 
 	req := ModbusRequest{
@@ -166,15 +171,48 @@ func manejarModbus(w http.ResponseWriter, r *http.Request) {
 
 	select {
 	case resp := <-req.Response:
-		if resp.Err != nil {
-			http.Error(w, resp.Err.Error(), 500)
-			return
-		}
-		w.Write(resp.Data)
-
+		return resp.Data, resp.Err
 	case <-time.After(5 * time.Second):
-		http.Error(w, "timeout modbus", 504)
+		return nil, fmt.Errorf("timeout modbus")
 	}
+}
+
+/* ===================== CONNECT ===================== */
+
+func manejarConnect(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	port := r.URL.Query().Get("port")
+
+	if id == "" || port == "" {
+		http.Error(w, "faltan parámetros", 400)
+		return
+	}
+
+	var slaveID byte
+	fmt.Sscanf(id, "%d", &slaveID)
+
+	conn, err := net.Dial("tcp", "127.0.0.1:"+port)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	slave := &Slave{
+		ID:          slaveID,
+		Conn:        conn,
+		Queue:       make(chan ModbusRequest, 100),
+		ConnectedAt: time.Now(),
+		LastSeen:    time.Now(),
+	}
+
+	mutex.Lock()
+	slaves[slaveID] = slave
+	mutex.Unlock()
+
+	go loopSlave(slave)
+
+	fmt.Printf("[SERVER] Slave %d conectado en %s\n", slaveID, conn.RemoteAddr())
+	fmt.Fprintf(w, "Slave %d conectado\n", slaveID)
 }
 
 /* ===================== LOOP SLAVE ===================== */
@@ -182,24 +220,20 @@ func manejarModbus(w http.ResponseWriter, r *http.Request) {
 func loopSlave(slave *Slave) {
 	for req := range slave.Queue {
 
-		fmt.Printf("[QUEUE] dequeue SLAVE %d\n", slave.ID)
-
 		adu := construirADU(slave, req)
 
 		fmt.Printf("[TX] SLAVE %d:\n", slave.ID)
-		for _, b := range adu {
-			fmt.Printf("%02X ", b)
-		}
-		fmt.Println()
+		printHex(adu)
 
-		if _, err := slave.Conn.Write(adu); err != nil {
+		n, err := slave.Conn.Write(adu)
+		if err != nil {
 			req.Response <- ModbusResponse{Err: err}
 			continue
 		}
 
-		slave.Conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		slave.BytesTx += uint64(n)
+		slave.Requests++
 
-		/* ===== 1. Leer MBAP (7 bytes) ===== */
 		mbap := make([]byte, 7)
 		if _, err := io.ReadFull(slave.Conn, mbap); err != nil {
 			req.Response <- ModbusResponse{Err: err}
@@ -207,26 +241,27 @@ func loopSlave(slave *Slave) {
 		}
 
 		length := int(binary.BigEndian.Uint16(mbap[4:6]))
-
-		/* ===== 2. Leer PDU ===== */
 		pdu := make([]byte, length-1)
-		if _, err := io.ReadFull(slave.Conn, pdu); err != nil {
-			req.Response <- ModbusResponse{Err: err}
-			continue
-		}
+		io.ReadFull(slave.Conn, pdu)
 
 		resp := append(mbap, pdu...)
 
+		slave.BytesRx += uint64(len(resp))
+		slave.LastSeen = time.Now()
+
 		fmt.Printf("[RX] SLAVE %d:\n", slave.ID)
-		for _, b := range resp {
-			fmt.Printf("%02X ", b)
-		}
-		fmt.Println()
+		printHex(resp)
 
 		req.Response <- ModbusResponse{Data: resp}
 	}
 }
 
+func printHex(data []byte) {
+	for _, b := range data {
+		fmt.Printf("%02X ", b)
+	}
+	fmt.Println()
+}
 
 /* ===================== BUILD ADU ===================== */
 
@@ -238,68 +273,26 @@ func construirADU(slave *Slave, req ModbusRequest) []byte {
 		byte(req.Address >> 8), byte(req.Address),
 	}
 
-	switch req.Function {
-	case 0x03:
-		pdu = append(pdu,
-			byte(req.Quantity>>8), byte(req.Quantity),
-		)
-	case 0x10:
-		qty := uint16(len(req.Values))
-		pdu = append(pdu,
-			byte(qty>>8), byte(qty),
-			byte(qty*2),
-		)
-		for _, v := range req.Values {
-			pdu = append(pdu, byte(v>>8), byte(v))
-		}
+	if req.Function == 0x03 {
+		pdu = append(pdu, byte(req.Quantity>>8), byte(req.Quantity))
 	}
 
-	length := uint16(1 + len(pdu))
+	length := uint16(len(pdu) + 1)
 
-	mbap := []byte{
+	return append([]byte{
 		byte(slave.TransactionID >> 8), byte(slave.TransactionID),
 		0x00, 0x00,
 		byte(length >> 8), byte(length),
 		slave.ID,
-	}
-
-	return append(mbap, pdu...)
+	}, pdu...)
 }
 
 /* ===================== STATS ===================== */
 
 func manejarStats(w http.ResponseWriter, r *http.Request) {
-	type stat struct {
-		ID          byte      `json:"slave_id"`
-		RemoteAddr  string    `json:"remote_addr"`
-		ConnectedAt time.Time `json:"connected_at"`
-		LastSeen    time.Time `json:"last_seen"`
-		Requests    uint64    `json:"requests"`
-		BytesTx     uint64    `json:"bytes_tx"`
-		BytesRx     uint64    `json:"bytes_rx"`
-		UptimeSec   int64     `json:"uptime_sec"`
-	}
-
 	mutex.Lock()
 	defer mutex.Unlock()
-
-	stats := []stat{}
-	now := time.Now()
-
-	for _, s := range slaves {
-		stats = append(stats, stat{
-			ID:          s.ID,
-			RemoteAddr:  s.Conn.RemoteAddr().String(),
-			ConnectedAt: s.ConnectedAt,
-			LastSeen:    s.LastSeen,
-			Requests:    s.Requests,
-			BytesTx:     s.BytesTx,
-			BytesRx:     s.BytesRx,
-			UptimeSec:   int64(now.Sub(s.ConnectedAt).Seconds()),
-		})
-	}
-
-	json.NewEncoder(w).Encode(stats)
+	json.NewEncoder(w).Encode(slaves)
 }
 
 /* ===================== SHUTDOWN ===================== */
@@ -311,15 +304,9 @@ func manejarShutdown(cancel context.CancelFunc) {
 	<-ch
 	fmt.Println("Shutdown solicitado")
 
-	if httpServer != nil {
-		httpServer.Shutdown(context.Background())
+	if mqttClient != nil {
+		mqttClient.Disconnect(250)
 	}
-
-	mutex.Lock()
-	for _, s := range slaves {
-		s.Conn.Close()
-	}
-	mutex.Unlock()
 
 	cancel()
 }
