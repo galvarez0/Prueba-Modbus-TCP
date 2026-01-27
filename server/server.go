@@ -83,12 +83,17 @@ func main() {
 /* ===================== MQTT ===================== */
 
 func initMQTT() {
+	broker := os.Getenv("MQTT_BROKER")
+	if broker == "" {
+		broker = "tcp://localhost:1883"
+	}
+
 	opts := mqtt.NewClientOptions().
-		AddBroker("tcp://localhost:1883").
+		AddBroker(broker).
 		SetClientID("modbus-master")
 
 	opts.OnConnect = func(c mqtt.Client) {
-		fmt.Println("[MQTT] Conectado al broker")
+		fmt.Println("[MQTT] Conectado al broker", broker)
 		c.Subscribe("modbus/request", 0, manejarMQTTRequest)
 	}
 

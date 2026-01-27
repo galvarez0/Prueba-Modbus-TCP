@@ -1,0 +1,9 @@
+FROM alpine:3.20
+
+WORKDIR /app
+
+COPY modbus-server /app/modbus-server
+
+EXPOSE 8080
+
+ENTRYPOINT ["/app/modbus-server"]

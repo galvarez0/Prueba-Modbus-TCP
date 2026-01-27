@@ -1,0 +1,42 @@
+version: "3.9"
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: mosquitto
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+    networks:
+      - modbus_net
+
+  modbus-server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile.server
+    container_name: modbus-server
+    depends_on:
+      - mosquitto
+    networks:
+      - modbus_net
+
+  modbus-client-1:
+    build:
+      context: ./client
+      dockerfile: Dockerfile.client
+    container_name: modbus-client-1
+    command: ["1"]
+    networks:
+      - modbus_net
+
+  modbus-client-2:
+    build:
+      context: ./client
+      dockerfile: Dockerfile.client
+    container_name: modbus-client-2
+    command: ["2"]
+    networks:
+      - modbus_net
+
+networks:
+  modbus_net:
+    driver: bridge
