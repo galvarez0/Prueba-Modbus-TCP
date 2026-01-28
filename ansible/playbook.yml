@@ -1,0 +1,44 @@
+---
+- hosts: all
+  become: true
+
+  vars:
+    app_name: pruebatcp1
+    app_dir: /opt/pruebatcp1
+
+  tasks:
+    - name: Asegurar directorio de aplicación
+      file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Copiar docker-compose.yml
+      copy:
+        src: ../docker-compose.yml
+        dest: "{{ app_dir }}/docker-compose.yml"
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Pull de imágenes Docker
+      community.docker.docker_compose_v2:
+        project_src: "{{ app_dir }}"
+        pull: always
+
+    - name: Levantar stack con docker compose
+      community.docker.docker_compose_v2:
+        project_src: "{{ app_dir }}"
+        state: present
+
+    - name: Mostrar estado de contenedores
+      command: docker compose ps
+      args:
+        chdir: "{{ app_dir }}"
+      register: compose_ps
+
+    - name: Debug estado docker compose
+      debug:
+        var: compose_ps.stdout

@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"github.com/galvarez0/Prueba-Modbus-TCP/client/internal/modbus"
 )
 
 const (
@@ -118,8 +119,8 @@ func procesarRequests(slaveID byte, holding []uint16) {
 		switch function {
 
 		case 0x03:
-			address := uint16(buffer[8])<<8 | uint16(buffer[9])
-			quantity := uint16(buffer[10])<<8 | uint16(buffer[11])
+			address := modbus.GetUint16(buffer[8:10])
+			quantity := modbus.GetUint16(buffer[10:12])
 
 			if int(address+quantity) > len(holding) {
 				pduResp = []byte{function | 0x80, 0x02}
@@ -130,17 +131,18 @@ func procesarRequests(slaveID byte, holding []uint16) {
 			pduResp = []byte{0x03, byteCount}
 
 			for i := uint16(0); i < quantity; i++ {
-				val := holding[address+i]
-				pduResp = append(pduResp, byte(val>>8), byte(val))
+				tmp := make([]byte, 2)
+				modbus.PutUint16(tmp, holding[address+i])
+				pduResp = append(pduResp, tmp...)
 			}
 
 		case 0x10:
-			address := uint16(buffer[8])<<8 | uint16(buffer[9])
-			quantity := uint16(buffer[10])<<8 | uint16(buffer[11])
+			address := modbus.GetUint16(buffer[8:10])
+			quantity := modbus.GetUint16(buffer[10:12])
 
 			valuesStart := 13
 			for i := uint16(0); i < quantity; i++ {
-				val := uint16(buffer[valuesStart])<<8 | uint16(buffer[valuesStart+1])
+				val := modbus.GetUint16(buffer[valuesStart : valuesStart+2])
 				holding[address+i] = val
 				valuesStart += 2
 			}

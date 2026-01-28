@@ -2,10 +2,8 @@ package main
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"io"
 	"net"
 	"net/http"
@@ -14,6 +12,9 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"github.com/galvarez0/Prueba-Modbus-TCP/server/internal/modbus"
 )
 
 /* ===================== STRUCTS ===================== */
@@ -245,7 +246,7 @@ func loopSlave(slave *Slave) {
 			continue
 		}
 
-		length := int(binary.BigEndian.Uint16(mbap[4:6]))
+		length := modbus.GetUint16(mbap[4:6])
 		pdu := make([]byte, length-1)
 		io.ReadFull(slave.Conn, pdu)
 
@@ -275,21 +276,27 @@ func construirADU(slave *Slave, req ModbusRequest) []byte {
 
 	pdu := []byte{
 		req.Function,
-		byte(req.Address >> 8), byte(req.Address),
 	}
 
+	addr := make([]byte, 2)
+	modbus.PutUint16(addr, req.Address)
+	pdu = append(pdu, addr...)
+
 	if req.Function == 0x03 {
-		pdu = append(pdu, byte(req.Quantity>>8), byte(req.Quantity))
+		q := make([]byte, 2)
+		modbus.PutUint16(q, req.Quantity)
+		pdu = append(pdu, q...)
 	}
 
 	length := uint16(len(pdu) + 1)
 
-	return append([]byte{
-		byte(slave.TransactionID >> 8), byte(slave.TransactionID),
-		0x00, 0x00,
-		byte(length >> 8), byte(length),
-		slave.ID,
-	}, pdu...)
+	mbap := make([]byte, 7)
+	modbus.PutUint16(mbap[0:2], slave.TransactionID)
+	mbap[2], mbap[3] = 0x00, 0x00
+	modbus.PutUint16(mbap[4:6], length)
+	mbap[6] = slave.ID
+
+	return append(mbap, pdu...)
 }
 
 /* ===================== STATS ===================== */
