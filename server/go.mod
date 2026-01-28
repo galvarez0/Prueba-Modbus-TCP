@@ -1,4 +1,4 @@
-module server
+module github.com/galvarez0/Prueba-Modbus-TCP/server
 
 go 1.22
 
