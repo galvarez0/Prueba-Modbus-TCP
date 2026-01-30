@@ -5,6 +5,11 @@ services:
   mosquitto:
     image: eclipse-mosquitto:2
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mosquitto_sub", "-h", "localhost", "-p", "1883", "-t", "$SYS/broker/uptime", "-C", "1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     logging:
       driver: json-file
       options:
@@ -18,7 +23,8 @@ services:
     environment:
       - MQTT_BROKER=tcp://mosquitto:1883
     depends_on:
-      - mosquitto
+      mosquitto:
+        condition: service_healthy
     restart: unless-stopped
     logging:
       driver: json-file
@@ -30,18 +36,8 @@ services:
     image: galvarez0/pruebatcp1:modbus-client
     command: ["1"]
     restart: unless-stopped
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
 
   modbus-client-2:
     image: galvarez0/pruebatcp1:modbus-client
     command: ["2"]
     restart: unless-stopped
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
