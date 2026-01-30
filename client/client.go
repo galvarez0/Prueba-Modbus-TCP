@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
+	"os/signal"
 	"strconv"
 	"sync"
+	"syscall"
+
 	"github.com/galvarez0/Prueba-Modbus-TCP/client/internal/modbus"
 )
 
@@ -53,6 +57,15 @@ func main() {
 		return
 	}
 
+	/* ===================== SHUTDOWN CONTROLADO ===================== */
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		<-ctx.Done()
+		terminarProceso(listener)
+	}()
+
 	holding := make([]uint16, registerCount)
 	for i := range holding {
 		holding[i] = uint16(i)
@@ -64,17 +77,22 @@ func main() {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			os.Exit(0)
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				continue
+			}
 		}
 
 		fmt.Printf("MASTER conectado (SLAVE %d)\n", slaveID)
-		go leerSocket(conn, listener)
+		go leerSocket(conn)
 	}
 }
 
 /* ===================== SOCKET READ ===================== */
 
-func leerSocket(conn net.Conn, listener net.Listener) {
+func leerSocket(conn net.Conn) {
 	defer conn.Close()
 
 	buffer := make([]byte, 260)
@@ -83,8 +101,7 @@ func leerSocket(conn net.Conn, listener net.Listener) {
 		n, err := conn.Read(buffer)
 		if err != nil {
 			fmt.Println("MASTER desconectado")
-			terminarProceso(listener)
-			return
+			return // ← solo termina esta conexión xd
 		}
 
 		// Copia segura del frame

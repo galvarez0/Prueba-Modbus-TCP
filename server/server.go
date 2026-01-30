@@ -91,17 +91,33 @@ func initMQTT() {
 
 	opts := mqtt.NewClientOptions().
 		AddBroker(broker).
-		SetClientID("modbus-master")
+		SetClientID("modbus-master").
+		SetAutoReconnect(true).
+		SetConnectRetry(true).
+		SetConnectRetryInterval(3 * time.Second)
 
 	opts.OnConnect = func(c mqtt.Client) {
 		fmt.Println("[MQTT] Conectado al broker", broker)
 		c.Subscribe("modbus/request", 0, manejarMQTTRequest)
 	}
 
-	mqttClient = mqtt.NewClient(opts)
-	if token := mqttClient.Connect(); token.Wait() && token.Error() != nil {
-		panic(token.Error())
+	opts.OnConnectionLost = func(_ mqtt.Client, err error) {
+		fmt.Println("[MQTT] conexión perdida:", err)
 	}
+
+	mqttClient = mqtt.NewClient(opts)
+
+	go func() {
+		for {
+			token := mqttClient.Connect()
+			token.Wait()
+			if token.Error() == nil {
+				return
+			}
+			fmt.Println("[MQTT] retry:", token.Error())
+			time.Sleep(3 * time.Second)
+		}
+	}()
 }
 
 func manejarMQTTRequest(client mqtt.Client, msg mqtt.Message) {
@@ -224,6 +240,16 @@ func manejarConnect(w http.ResponseWriter, r *http.Request) {
 /* ===================== LOOP SLAVE ===================== */
 
 func loopSlave(slave *Slave) {
+	defer func() {
+		fmt.Printf("[SERVER] Slave %d desconectado\n", slave.ID)
+
+		mutex.Lock()
+		delete(slaves, slave.ID)
+		mutex.Unlock()
+
+		slave.Conn.Close()
+	}()
+
 	for req := range slave.Queue {
 
 		adu := construirADU(slave, req)
@@ -248,7 +274,11 @@ func loopSlave(slave *Slave) {
 
 		length := modbus.GetUint16(mbap[4:6])
 		pdu := make([]byte, length-1)
-		io.ReadFull(slave.Conn, pdu)
+
+		if _, err := io.ReadFull(slave.Conn, pdu); err != nil {
+			req.Response <- ModbusResponse{Err: err}
+			continue
+		}
 
 		resp := append(mbap, pdu...)
 
@@ -269,14 +299,10 @@ func printHex(data []byte) {
 	fmt.Println()
 }
 
-/* ===================== BUILD ADU ===================== */
-
 func construirADU(slave *Slave, req ModbusRequest) []byte {
 	slave.TransactionID++
 
-	pdu := []byte{
-		req.Function,
-	}
+	pdu := []byte{req.Function}
 
 	addr := make([]byte, 2)
 	modbus.PutUint16(addr, req.Address)

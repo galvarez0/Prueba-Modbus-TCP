@@ -1,29 +1,47 @@
 version: "3.9"
 
 services:
+
   mosquitto:
     image: eclipse-mosquitto:2
-    container_name: mosquitto
-    networks: [modbus_net]
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   modbus-server:
-    image: galvarez0/pruebatcp1-server:latest
-    container_name: modbus-server
-    depends_on: [mosquitto]
-    networks: [modbus_net]
+    image: galvarez0/pruebatcp1:modbus-server
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      - MQTT_BROKER=tcp://mosquitto:1883
+    depends_on:
+      - mosquitto
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   modbus-client-1:
-    image: galvarez0/pruebatcp1-client:latest
-    container_name: modbus-client-1
+    image: galvarez0/pruebatcp1:modbus-client
     command: ["1"]
-    networks: [modbus_net]
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   modbus-client-2:
-    image: galvarez0/pruebatcp1-client:latest
-    container_name: modbus-client-2
+    image: galvarez0/pruebatcp1:modbus-client
     command: ["2"]
-    networks: [modbus_net]
-
-networks:
-  modbus_net:
-    driver: bridge
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
