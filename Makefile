@@ -1,10 +1,4 @@
-.PHONY: \
-	provision \
-	build-server build-client \
-	build-dockerserver build-dockerclient \
-	build-images \
-	push-images \
-	all
+.PHONY: bootstrap provision build-server build-client build-images push
 
 APP_NAME=pruebatcp1
 REGISTRY=galvarez0
@@ -15,25 +9,26 @@ CLIENT_BIN=client/modbus-client
 SERVER_IMG=$(REGISTRY)/$(APP_NAME):modbus-server
 CLIENT_IMG=$(REGISTRY)/$(APP_NAME):modbus-client
 
-build-server:
-	cd server && go build -o modbus-server server.go
 
-build-client:
-	cd client && go build -o modbus-client client.go
-
-build-dockerserver: build-server
-	docker build -f server/Dockerfile.server -t $(SERVER_IMG) server
-
-build-dockerclient: build-client
-	docker build -f client/Dockerfile.client -t $(CLIENT_IMG) client
-
-build-images: build-dockerserver build-dockerclient
-
-push-images:
-	docker push $(SERVER_IMG)
-	docker push $(CLIENT_IMG)
+bootstrap:
+	ansible-playbook -i ansible/inventory.ini ansible/bootstrap.yml
 
 provision:
 	ansible-playbook -i ansible/inventory.ini ansible/playbook.yml
 
-all: build-images provision
+
+build-server:
+	cd server && go build -o modbus-server .
+
+build-client:
+	cd client && go build -o modbus-client .
+
+
+build-images: build-server build-client
+	docker build -t $(SERVER_IMG) -f server/Dockerfile.server server
+	docker build -t $(CLIENT_IMG) -f client/Dockerfile.client client
+
+
+push:
+	docker push $(SERVER_IMG)
+	docker push $(CLIENT_IMG)
