@@ -5,8 +5,10 @@ services:
   mosquitto:
     image: eclipse-mosquitto:2
     restart: unless-stopped
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
     healthcheck:
-      test: ["CMD", "mosquitto_sub", "-h", "localhost", "-p", "1883", "-t", "$SYS/broker/uptime", "-C", "1"]
+      test: ["CMD", "sh", "-c", "nc -z localhost 1883"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -15,6 +17,8 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    networks:
+      - pruebatcp1
 
   modbus-server:
     image: galvarez0/pruebatcp1:modbus-server

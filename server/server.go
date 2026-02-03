@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -144,13 +147,18 @@ func iniciarHTTP() {
 	mux.HandleFunc("/modbus", manejarHTTPModbus)
 	mux.HandleFunc("/stats", manejarStats)
 
+	// productores por curl
+	mux.HandleFunc("/test", manejarTest)
+	mux.HandleFunc("/read", manejarRead)
+	mux.HandleFunc("/write", manejarWrite)
+
 	httpServer = &http.Server{
 		Addr:    ":8080",
 		Handler: mux,
 	}
 
 	fmt.Println("HTTP escuchando en :8080")
-	httpServer.ListenAndServe()
+	_ = httpServer.ListenAndServe()
 }
 
 func manejarHTTPModbus(w http.ResponseWriter, r *http.Request) {
@@ -186,7 +194,7 @@ func procesarModbus(payload ModbusHTTPPayload) ([]byte, error) {
 		Address:  payload.Request.Address,
 		Quantity: payload.Request.Length,
 		Values:   payload.Request.Values,
-		Response: make(chan ModbusResponse),
+		Response: make(chan ModbusResponse, 1), // buffered para evitar deadlock
 	}
 
 	slave.Queue <- req
@@ -203,17 +211,30 @@ func procesarModbus(payload ModbusHTTPPayload) ([]byte, error) {
 
 func manejarConnect(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
+	host := r.URL.Query().Get("host")
 	port := r.URL.Query().Get("port")
 
 	if id == "" || port == "" {
 		http.Error(w, "faltan parámetros", 400)
 		return
 	}
+	if host == "" {
+		host = "127.0.0.1"
+	}
 
 	var slaveID byte
 	fmt.Sscanf(id, "%d", &slaveID)
 
-	conn, err := net.Dial("tcp", "127.0.0.1:"+port)
+	// evita duplicados
+	mutex.Lock()
+	if _, ok := slaves[slaveID]; ok {
+		mutex.Unlock()
+		http.Error(w, "slave ya conectado", 409)
+		return
+	}
+	mutex.Unlock()
+
+	conn, err := net.Dial("tcp", host+":"+port)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -237,6 +258,129 @@ func manejarConnect(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Slave %d conectado\n", slaveID)
 }
 
+// /test?id=1  -> read addr=0 qty=1
+func manejarTest(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "faltan parámetros", 400)
+		return
+	}
+	r.URL.RawQuery = "id=" + id + "&addr=0&qty=1"
+	manejarRead(w, r)
+}
+
+// /read?id=1&addr=0&qty=1
+func manejarRead(w http.ResponseWriter, r *http.Request) {
+	idStr := r.URL.Query().Get("id")
+	addrStr := r.URL.Query().Get("addr")
+	qtyStr := r.URL.Query().Get("qty")
+
+	if idStr == "" || addrStr == "" || qtyStr == "" {
+		http.Error(w, "faltan parámetros", 400)
+		return
+	}
+
+	idInt, err := strconv.Atoi(idStr)
+	if err != nil || idInt < 0 || idInt > 255 {
+		http.Error(w, "id inválido", 400)
+		return
+	}
+	addr, err := parseUint16(addrStr)
+	if err != nil {
+		http.Error(w, "addr inválido", 400)
+		return
+	}
+	qty, err := parseUint16(qtyStr)
+	if err != nil || qty == 0 {
+		http.Error(w, "qty inválido", 400)
+		return
+	}
+
+	payload := ModbusHTTPPayload{SlaveID: byte(idInt)}
+	payload.Request.Function = 0x03
+	payload.Request.Address = addr
+	payload.Request.Length = qty
+
+	data, err := procesarModbus(payload)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	fmt.Fprintln(w, hex.EncodeToString(data))
+}
+
+func manejarWrite(w http.ResponseWriter, r *http.Request) {
+	idStr := r.URL.Query().Get("id")
+	addrStr := r.URL.Query().Get("addr")
+	valuesStr := r.URL.Query().Get("values")
+
+	if idStr == "" || addrStr == "" || valuesStr == "" {
+		http.Error(w, "faltan parámetros", 400)
+		return
+	}
+
+	idInt, err := strconv.Atoi(idStr)
+	if err != nil || idInt < 0 || idInt > 255 {
+		http.Error(w, "id inválido", 400)
+		return
+	}
+	addr, err := parseUint16(addrStr)
+	if err != nil {
+		http.Error(w, "addr inválido", 400)
+		return
+	}
+
+	values, err := parseCSVUint16(valuesStr)
+	if err != nil || len(values) == 0 {
+		http.Error(w, "values inválido", 400)
+		return
+	}
+
+	payload := ModbusHTTPPayload{SlaveID: byte(idInt)}
+	payload.Request.Function = 0x10
+	payload.Request.Address = addr
+	payload.Request.Length = uint16(len(values))
+	payload.Request.Values = values
+
+	data, err := procesarModbus(payload)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	fmt.Fprintln(w, hex.EncodeToString(data))
+}
+
+func parseUint16(s string) (uint16, error) {
+	// soporta decimal "10" o hex "0x0A"
+	base := 10
+	ss := strings.TrimSpace(s)
+	if strings.HasPrefix(ss, "0x") || strings.HasPrefix(ss, "0X") {
+		base = 16
+		ss = ss[2:]
+	}
+	u, err := strconv.ParseUint(ss, base, 16)
+	if err != nil {
+		return 0, err
+	}
+	return uint16(u), nil
+}
+
+func parseCSVUint16(s string) ([]uint16, error) {
+	parts := strings.Split(s, ",")
+	out := make([]uint16, 0, len(parts))
+	for _, p := range parts {
+		v, err := parseUint16(strings.TrimSpace(p))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, nil
+}
+
 /* ===================== LOOP SLAVE ===================== */
 
 func loopSlave(slave *Slave) {
@@ -247,7 +391,7 @@ func loopSlave(slave *Slave) {
 		delete(slaves, slave.ID)
 		mutex.Unlock()
 
-		slave.Conn.Close()
+		_ = slave.Conn.Close()
 	}()
 
 	for req := range slave.Queue {
@@ -259,7 +403,7 @@ func loopSlave(slave *Slave) {
 
 		n, err := slave.Conn.Write(adu)
 		if err != nil {
-			req.Response <- ModbusResponse{Err: err}
+			nonBlockingReply(req.Response, ModbusResponse{Err: err})
 			continue
 		}
 
@@ -268,15 +412,20 @@ func loopSlave(slave *Slave) {
 
 		mbap := make([]byte, 7)
 		if _, err := io.ReadFull(slave.Conn, mbap); err != nil {
-			req.Response <- ModbusResponse{Err: err}
+			nonBlockingReply(req.Response, ModbusResponse{Err: err})
 			continue
 		}
 
 		length := modbus.GetUint16(mbap[4:6])
+		if length < 2 {
+			nonBlockingReply(req.Response, ModbusResponse{Err: fmt.Errorf("respuesta modbus inválida (length=%d)", length)})
+			continue
+		}
+
 		pdu := make([]byte, length-1)
 
 		if _, err := io.ReadFull(slave.Conn, pdu); err != nil {
-			req.Response <- ModbusResponse{Err: err}
+			nonBlockingReply(req.Response, ModbusResponse{Err: err})
 			continue
 		}
 
@@ -288,7 +437,17 @@ func loopSlave(slave *Slave) {
 		fmt.Printf("[RX] SLAVE %d:\n", slave.ID)
 		printHex(resp)
 
-		req.Response <- ModbusResponse{Data: resp}
+		nonBlockingReply(req.Response, ModbusResponse{Data: resp})
+	}
+}
+
+func nonBlockingReply(ch chan ModbusResponse, resp ModbusResponse) {
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- resp:
+	default:
 	}
 }
 
@@ -308,10 +467,27 @@ func construirADU(slave *Slave, req ModbusRequest) []byte {
 	modbus.PutUint16(addr, req.Address)
 	pdu = append(pdu, addr...)
 
-	if req.Function == 0x03 {
+	switch req.Function {
+	case 0x03:
+		// quantity
 		q := make([]byte, 2)
 		modbus.PutUint16(q, req.Quantity)
 		pdu = append(pdu, q...)
+
+	case 0x10:
+		// quantity
+		q := make([]byte, 2)
+		modbus.PutUint16(q, req.Quantity)
+		pdu = append(pdu, q...)
+
+		byteCount := byte(len(req.Values) * 2)
+		pdu = append(pdu, byteCount)
+
+		for _, v := range req.Values {
+			tmp := make([]byte, 2)
+			modbus.PutUint16(tmp, v)
+			pdu = append(pdu, tmp...)
+		}
 	}
 
 	length := uint16(len(pdu) + 1)

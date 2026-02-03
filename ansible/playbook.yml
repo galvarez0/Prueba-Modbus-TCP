@@ -5,6 +5,7 @@
   vars:
     app_name: pruebatcp1
     app_dir: /opt/pruebatcp1
+    domain: dm-server-test.datamecanic.com
 
   tasks:
     - name: Asegurar directorio de aplicación
@@ -13,7 +14,24 @@
         state: directory
         owner: root
         group: root
-        mode: '0755'
+        mode: "0755"
+
+    - name: Asegurar directorio mosquitto
+      file:
+        path: "{{ app_dir }}/mosquitto"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Copiar mosquitto.conf
+      copy:
+        src: ../mosquitto/mosquitto.conf
+        dest: "{{ app_dir }}/mosquitto/mosquitto.conf"
+        dest: "{{ app_dir }}/mosquitto/mosquitto.conf"
+        owner: root
+        group: root
+        mode: "0644"
 
     - name: Copiar docker-compose.yml
       copy:
@@ -21,17 +39,29 @@
         dest: "{{ app_dir }}/docker-compose.yml"
         owner: root
         group: root
-        mode: '0644'
+        mode: "0644"
 
-    - name: Pull de imágenes Docker
+    - name: Copiar Caddyfile
+      copy:
+        src: files/Caddyfile
+        dest: /etc/caddy/Caddyfile
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Reiniciar caddy
+      systemd:
+        name: caddy
+        state: restarted
+        enabled: yes
+
+    - name: Pull y up (docker compose v2)
       community.docker.docker_compose_v2:
         project_src: "{{ app_dir }}"
         pull: always
-
-    - name: Levantar stack con docker compose
-      community.docker.docker_compose_v2:
-        project_src: "{{ app_dir }}"
         state: present
+        remove_orphans: true
+        recreate: always
 
     - name: Mostrar estado de contenedores
       command: docker compose ps
