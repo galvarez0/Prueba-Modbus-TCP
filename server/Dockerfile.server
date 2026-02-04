@@ -1,8 +1,18 @@
-FROM alpine:3.20
+FROM golang:1.22-alpine AS build
 
 WORKDIR /app
 
-COPY modbus-server /app/modbus-server
+COPY server/go.mod server/go.sum ./
+RUN go mod download
+
+COPY server ./
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/modbus-server .
+
+FROM alpine:3.204
+
+WORKDIR /app
+
+COPY --from=build /out/modbus-server /app/modbus-server
 RUN chmod +x /app/modbus-server
 
 EXPOSE 8080

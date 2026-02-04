@@ -225,15 +225,6 @@ func manejarConnect(w http.ResponseWriter, r *http.Request) {
 	var slaveID byte
 	fmt.Sscanf(id, "%d", &slaveID)
 
-	// evita duplicados
-	mutex.Lock()
-	if _, ok := slaves[slaveID]; ok {
-		mutex.Unlock()
-		http.Error(w, "slave ya conectado", 409)
-		return
-	}
-	mutex.Unlock()
-
 	conn, err := net.Dial("tcp", host+":"+port)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
@@ -248,7 +239,14 @@ func manejarConnect(w http.ResponseWriter, r *http.Request) {
 		LastSeen:    time.Now(),
 	}
 
+	// evita duplicados + GUARDA el slave en el map (en el mismo lock)
 	mutex.Lock()
+	if _, ok := slaves[slaveID]; ok {
+		mutex.Unlock()
+		_ = conn.Close()
+		http.Error(w, "slave ya conectado", 409)
+		return
+	}
 	slaves[slaveID] = slave
 	mutex.Unlock()
 
@@ -503,10 +501,52 @@ func construirADU(slave *Slave, req ModbusRequest) []byte {
 
 /* ===================== STATS ===================== */
 
+type SlaveStats struct {
+	ID            byte      `json:"id"`
+	TransactionID uint16    `json:"transaction_id"`
+	ConnectedAt   time.Time `json:"connected_at"`
+	LastSeen      time.Time `json:"last_seen"`
+	Requests      uint64    `json:"requests"`
+	BytesTx       uint64    `json:"bytes_tx"`
+	BytesRx       uint64    `json:"bytes_rx"`
+	QueueLen      int       `json:"queue_len"`
+	RemoteAddr    string    `json:"remote_addr,omitempty"`
+}
+
 func manejarStats(w http.ResponseWriter, r *http.Request) {
 	mutex.Lock()
 	defer mutex.Unlock()
-	json.NewEncoder(w).Encode(slaves)
+
+	out := make(map[string]SlaveStats, len(slaves))
+
+	for id, slave := range slaves {
+		st := SlaveStats{
+			ID:            slave.ID,
+			TransactionID: slave.TransactionID,
+			ConnectedAt:   slave.ConnectedAt,
+			LastSeen:      slave.LastSeen,
+			Requests:      slave.Requests,
+			BytesTx:       slave.BytesTx,
+			BytesRx:       slave.BytesRx,
+			QueueLen:      0,
+		}
+
+		if slave.Queue != nil {
+			st.QueueLen = len(slave.Queue)
+		}
+		if slave.Conn != nil {
+			st.RemoteAddr = slave.Conn.RemoteAddr().String()
+		}
+
+		out[strconv.Itoa(int(id))] = st
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if err := json.NewEncoder(w).Encode(out); err != nil {
+		fmt.Printf("ERROR /stats json encode: %v\n", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 }
 
 /* ===================== SHUTDOWN ===================== */

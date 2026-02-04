@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
 
   mosquitto:
@@ -21,6 +19,9 @@ services:
       - pruebatcp1
 
   modbus-server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile.server
     image: galvarez0/pruebatcp1:modbus-server
     ports:
       - "127.0.0.1:8080:8080"
@@ -35,13 +36,23 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    networks:
+      - pruebatcp1
 
   modbus-client-1:
     image: galvarez0/pruebatcp1:modbus-client
     command: ["1"]
     restart: unless-stopped
+    networks:
+      - pruebatcp1
 
   modbus-client-2:
     image: galvarez0/pruebatcp1:modbus-client
     command: ["2"]
     restart: unless-stopped
+    networks:
+      - pruebatcp1
+
+networks:
+  pruebatcp1:
+    driver: bridge

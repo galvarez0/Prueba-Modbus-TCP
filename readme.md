@@ -1,5 +1,5 @@
 # Prueba Modbus TCP
-Guía de instalación, compilación y ejecución
+Guía de instalación, compilación, despliegue y verificación
 
 Este documento describe cómo instalar, compilar, desplegar y verificar el proyecto **Prueba Modbus TCP**, tanto en local como en un servidor remoto usando Docker, Docker Compose, Ansible y GitHub Actions.
 
@@ -28,26 +28,35 @@ El proyecto implementa un sistema compuesto por:
 - Docker Compose (plugin `docker compose`)
 - Make
 - curl
+- jq (opcional, para pretty print de JSON)
 
 ### Servidor remoto
 - Ubuntu
-- Acceso root
+- Acceso root por SSH mediante clave
 - Dominio apuntando al servidor (ej. dm-server-test.datamecanic.com)
 - Ruta fija de despliegue: `/opt/pruebatcp1`
 
 ---
 
-## 3. Compilación local (sin Docker)
+## 3. Compilación local de binarios (sin Docker)
 
+### Server
 ```bash
-make
+cd server
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o modbus-server .
 ```
 
-Compila server y client como binarios locales.
+### Client
+```bash
+cd client
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o modbus-client .
+```
+
+Estos comandos generan binarios estáticos compatibles con Alpine Linux.
 
 ---
 
-## 4. Ejecución local sin Docker
+## 4. Ejecución local sin Docker (modo desarrollo)
 
 ### Mosquitto
 ```bash
@@ -56,13 +65,13 @@ mosquitto -p 1883
 
 ### Server
 ```bash
-./server
+./modbus-server
 ```
 
 ### Clients
 ```bash
-./client 1
-./client 2
+./modbus-client 1
+./modbus-client 2
 ```
 
 ---
@@ -74,38 +83,106 @@ docker compose up -d
 docker compose logs -f
 ```
 
-Detener:
+Detener el stack:
 ```bash
 docker compose down
 ```
 
 ---
 
-## 6. Validación por navegador y curl
+## 6. Acceso SSH al servidor remoto
 
-### Estado del server
+El acceso al servidor se realiza exclusivamente mediante clave SSH:
+
 ```bash
-curl https://dm-server-test.datamecanic.com/stats
+ssh root@138.197.101.64 -i mykey
 ```
 
-### Conectar slaves
+Una vez conectado, todo el despliegue ocurre en:
+
+```bash
+cd /opt/pruebatcp1
+```
+
+---
+
+## 7. Recompilación y redeploy en el servidor remoto
+
+### Rebuild completo del server usando Docker (multi-stage)
+
+```bash
+cd /opt/pruebatcp1
+docker compose build --no-cache modbus-server
+docker compose up -d --force-recreate modbus-server
+```
+
+### Ver logs del server
+```bash
+docker compose logs -f modbus-server
+```
+
+---
+
+## 8. Validación de la API HTTP
+
+### 8.1 Estado inicial del sistema
+
+```bash
+curl -sS "https://dm-server-test.datamecanic.com/stats"
+```
+
+Salida esperada cuando no hay slaves conectados:
+```json
+{}
+```
+
+### 8.2 Conexión de slaves
+
 ```bash
 curl "https://dm-server-test.datamecanic.com/connect?id=1&host=modbus-client-1&port=5021"
 curl "https://dm-server-test.datamecanic.com/connect?id=2&host=modbus-client-2&port=5021"
 ```
 
-### Verificar
+### 8.3 Verificación de estado (JSON)
+
 ```bash
-curl https://dm-server-test.datamecanic.com/stats
+curl -sS "https://dm-server-test.datamecanic.com/stats"
+```
+
+### 8.4 Pretty print del JSON (opcional)
+
+```bash
+curl -sS "https://dm-server-test.datamecanic.com/stats" | jq .
 ```
 
 ---
 
-## 7. Producción de tráfico Modbus (pruebas)
+## 9. Producción de tráfico Modbus (prueba de flujo)
 
-El tráfico Modbus no se genera automáticamente.
+Secuencia recomendada de pruebas:
 
-Ejemplos:
+1. Verificar estado inicial:
+```bash
+curl -sS "https://dm-server-test.datamecanic.com/stats"
+```
+
+2. Conectar slave 1:
+```bash
+curl "https://dm-server-test.datamecanic.com/connect?id=1&host=modbus-client-1&port=5021"
+```
+
+3. Conectar slave 2:
+```bash
+curl "https://dm-server-test.datamecanic.com/connect?id=2&host=modbus-client-2&port=5021"
+```
+
+4. Verificar estado final:
+```bash
+curl -sS "https://dm-server-test.datamecanic.com/stats"
+```
+
+### Generación de tráfico Modbus
+
 ```bash
 curl "https://dm-server-test.datamecanic.com/test?id=1"
 curl "https://dm-server-test.datamecanic.com/read?id=1&addr=0&qty=1"
@@ -114,18 +191,7 @@ curl "https://dm-server-test.datamecanic.com/write?id=1&addr=0&values=10,11,12"
 
 ---
 
-## 8. Despliegue en servidor remoto (SSH)
-
-```bash
-ssh root@IP_DEL_SERVIDOR
-cd /opt/pruebatcp1
-docker compose up -d
-docker compose logs -f
-```
-
----
-
-## 9. Ansible
+## 10. Ansible
 
 ### Bootstrap (una sola vez)
 ```bash
@@ -137,11 +203,14 @@ ansible-playbook -i ansible/inventory.ini ansible/bootstrap.yml
 make provision
 ```
 
-Copia archivos, actualiza imágenes y levanta el stack.
+Este comando:
+- Sincroniza archivos
+- Actualiza imágenes
+- Levanta el stack completo
 
 ---
 
-## 10. GitHub Actions
+## 11. GitHub Actions
 
 El repositorio incluye un workflow de **Build & Docker Push** que:
 
@@ -151,61 +220,45 @@ El repositorio incluye un workflow de **Build & Docker Push** que:
 
 ### Secrets requeridos
 
-El workflow necesita los siguientes secrets configurados en GitHub:
-
 - `DOCKERHUB_USERNAME`
-- `DOCKERHUB_TOKEN` (o password)
+- `DOCKERHUB_TOKEN`
 
-Ruta para configurarlos:
-
+Ruta:
 ```
 Repository → Settings → Security → Secrets and variables → Actions
 ```
 
-### Fallos en build-and-push
+---
 
-Si el workflow falla durante el paso de login o push:
+## 12. Reglas importantes
 
-1. Ir a:
-   ```
-   Settings → Security → Secrets and variables → Actions
-   ```
-2. Verificar que:
-   - El usuario es correcto
-   - El token/password no esté expirado
-3. Guardar nuevamente los secrets
-4. Re-ejecutar el workflow desde la pestaña **Actions**
-
-No es necesario modificar el workflow para este tipo de fallos.
+- Cambios en archivos `.go` requieren recompilar binarios y reconstruir imágenes
+- Cambios en Dockerfile requieren rebuild de imágenes
+- Cambios en `docker-compose.yml` no requieren recompilar binarios
+- El despliegue remoto siempre ocurre en `/opt/pruebatcp1`
 
 ---
 
-## 11. Reglas importantes
-
-- Cambios en archivos `.go` requieren recompilar y reconstruir imágenes
-- Cambios en Dockerfile o Makefile requieren `make provision`
-- Cambios en docker-compose.yml no requieren recompilar binarios
-- Todo el despliegue remoto ocurre en `/opt/pruebatcp1`
-
----
-
-## 12. Errores comunes
+## 13. Errores comunes
 
 - `/stats` devuelve `{}`: no hay slaves conectados
-- Server reinicia: Mosquitto no estaba listo
-- `connection refused`: revisar healthcheck de Mosquitto
+- `/stats` vacío con slaves conectados: binario no recompilado
+- `connection refused`: Mosquitto no está healthy
+- Error DNS Docker: clientes no levantados en la red
 
 ---
 
-## 13. Resumen rápido
+## 14. Resumen rápido
 
 | Acción | Comando |
 |------|--------|
-Compilar | make |
-Build + push + deploy | make provision |
-Ver logs | docker compose logs -f |
-Producción | HTTP / MQTT |
+| Acceso SSH | `ssh root@138.197.101.64 -i mykey` |
+| Rebuild server | `docker compose build --no-cache modbus-server` |
+| Redeploy server | `docker compose up -d --force-recreate modbus-server` |
+| Ver logs | `docker compose logs -f modbus-server` |
+| Estado | `GET /stats` |
 
 ---
 
 Fin del documento.
+
