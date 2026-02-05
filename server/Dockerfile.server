@@ -3,6 +3,8 @@ FROM golang:1.22-alpine AS build
 WORKDIR /app
 
 COPY go.mod go.sum ./
+RUN go version
+RUN echo "---- go.mod ----" && sed -n '1,40p' go.mod
 RUN go mod download
 
 COPY . ./

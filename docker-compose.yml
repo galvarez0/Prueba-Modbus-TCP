@@ -20,8 +20,8 @@ services:
 
   modbus-server:
     build:
-      context: .
-      dockerfile: server/Dockerfile.server
+      context: ./server
+      dockerfile: Dockerfile.server
     image: galvarez0/pruebatcp1:modbus-server
     ports:
       - "127.0.0.1:8080:8080"

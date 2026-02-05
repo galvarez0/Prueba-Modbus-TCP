@@ -1,4 +1,4 @@
-.PHONY: bootstrap provision build-server build-client build-images push
+.PHONY: bootstrap provision provision-sync provision-remote-up provision-remote-build build-server build-client build-images push
 
 APP_NAME=pruebatcp1
 REGISTRY=galvarez0
@@ -9,12 +9,39 @@ CLIENT_BIN=client/modbus-client
 SERVER_IMG=$(REGISTRY)/$(APP_NAME):modbus-server
 CLIENT_IMG=$(REGISTRY)/$(APP_NAME):modbus-client
 
+REMOTE_HOST=138.197.101.64
+REMOTE_USER=root
+REMOTE_DIR=/opt/$(APP_NAME)
+SSH_KEY=mykey
+SSH=ssh -i $(SSH_KEY) $(REMOTE_USER)@$(REMOTE_HOST)
+RSYNC=rsync -avz --delete -e "ssh -i $(SSH_KEY)"
+
+RSYNC_EXCLUDES= \
+	--exclude ".git/" \
+	--exclude ".github/" \
+	--exclude "node_modules/" \
+	--exclude "**/.DS_Store" \
+	--exclude "**/*.log"
 
 bootstrap:
 	ansible-playbook -i ansible/inventory.ini ansible/bootstrap.yml
 
-provision:
+provision-sync:
+	$(RSYNC) $(RSYNC_EXCLUDES) ./ $(REMOTE_USER)@$(REMOTE_HOST):$(REMOTE_DIR)/
+
+provision-remote-up:
+	$(SSH) 'cd $(REMOTE_DIR) && docker compose pull || true'
+	$(SSH) 'cd $(REMOTE_DIR) && docker compose up -d --remove-orphans'
+	$(SSH) 'cd $(REMOTE_DIR) && docker compose ps'
+
+provision-remote-build:
+	$(SSH) 'cd $(REMOTE_DIR) && docker compose build --no-cache modbus-server'
+	$(SSH) 'cd $(REMOTE_DIR) && docker compose up -d --force-recreate modbus-server --remove-orphans'
+	$(SSH) 'cd $(REMOTE_DIR) && docker compose ps'
+
+provision: provision-sync
 	ansible-playbook -i ansible/inventory.ini ansible/playbook.yml
+	$(MAKE) provision-remote-up
 
 
 build-server:

@@ -4,6 +4,14 @@
 
   vars:
     app_dir: /opt/pruebatcp1
+    caddyfile_src: "{{ app_dir }}/ansible/files/Caddyfile"
+    caddyfile_dest: /etc/caddy/Caddyfile
+
+  handlers:
+    - name: Reload caddy
+      systemd:
+        name: caddy
+        state: reloaded
 
   tasks:
     - name: Asegurar directorio de aplicación
@@ -14,37 +22,35 @@
         group: root
         mode: "0755"
 
-    - name: Asegurar directorio mosquitto
-      file:
-        path: "{{ app_dir }}/mosquitto"
-        state: directory
-        owner: root
-        group: root
-        mode: "0755"
+    - name: Verificar que Caddy existe (paquete instalado)
+      command: caddy version
+      changed_when: false
 
-    - name: Copiar mosquitto.conf
+    - name: Instalar/actualizar Caddyfile en /etc/caddy/Caddyfile
       copy:
-        src: mosquitto/mosquitto.conf
-        dest: "{{ app_dir }}/mosquitto/mosquitto.conf"
+        src: "{{ caddyfile_src }}"
+        dest: "{{ caddyfile_dest }}"
         owner: root
         group: root
         mode: "0644"
+        remote_src: true
+      notify: Reload caddy
 
-    - name: Copiar docker-compose.yml
-      copy:
-        src: ../docker-compose.yml
-        dest: "{{ app_dir }}/docker-compose.yml"
-        owner: root
-        group: root
-        mode: "0644"
+    - name: Validar Caddyfile
+      command: caddy validate --config "{{ caddyfile_dest }}"
+      changed_when: false
 
-    - name: Copiar Caddyfile
-      copy:
-        src: files/Caddyfile
-        dest: "{{ app_dir }}/Caddyfile"
-        owner: root
-        group: root
-        mode: "0644"
+    - name: Asegurar Caddy activo
+      systemd:
+        name: caddy
+        enabled: yes
+        state: started
+
+    - name: Validar docker-compose.yml antes de levantar
+      command: docker compose config
+      args:
+        chdir: "{{ app_dir }}"
+      changed_when: false
 
     - name: Pull y up (docker compose)
       command: docker compose up -d --pull always --remove-orphans
@@ -56,7 +62,17 @@
       args:
         chdir: "{{ app_dir }}"
       register: compose_ps
+      changed_when: false
 
     - name: Debug estado docker compose
       debug:
         var: compose_ps.stdout
+
+    - name: Verificar que Caddy escucha en 80/443
+      shell: ss -lntp | egrep ':(80|443)\s' || true
+      register: listen_ports
+      changed_when: false
+
+    - name: Debug puertos 80/443
+      debug:
+        var: listen_ports.stdout
