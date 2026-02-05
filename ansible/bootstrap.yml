@@ -12,36 +12,54 @@
           - lsb-release
           - python3
           - python3-pip
+          - python3-docker
+        state: present
         update_cache: yes
 
-    - name: Agregar GPG key de Docker
-      apt_key:
-        url: https://download.docker.com/linux/ubuntu/gpg
-        state: present
+    - name: Crear directorio de keyrings
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
 
-    - name: Agregar repo Docker
+    - name: Descargar GPG key de Docker (ASCII)
+      get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        mode: "0644"
+
+    - name: Agregar repo Docker (con signed-by)
       apt_repository:
-        repo: >
-          deb [arch=amd64]
+        repo: >-
+          deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc]
           https://download.docker.com/linux/ubuntu
           {{ ansible_lsb.codename }} stable
         state: present
+        filename: docker
 
-    - name: Instalar Docker + compose plugin
+    - name: Instalar Docker Engine + plugins
       apt:
         name:
           - docker-ce
           - docker-ce-cli
           - containerd.io
+          - docker-buildx-plugin
           - docker-compose-plugin
+        state: present
         update_cache: yes
 
-    - name: Instalar Docker SDK para Ansible
-      pip:
-        name: docker
-
-    - name: Habilitar Docker
+    - name: Habilitar y arrancar Docker
       systemd:
         name: docker
         enabled: yes
         state: started
+
+    - name: Verificar Docker
+      command: docker --version
+      changed_when: false
+
+    - name: Verificar Docker Compose (plugin)
+      command: docker compose version
+      changed_when: false

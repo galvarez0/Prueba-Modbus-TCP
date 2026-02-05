@@ -3,9 +3,7 @@
   become: true
 
   vars:
-    app_name: pruebatcp1
     app_dir: /opt/pruebatcp1
-    domain: dm-server-test.datamecanic.com
 
   tasks:
     - name: Asegurar directorio de aplicación
@@ -43,24 +41,15 @@
     - name: Copiar Caddyfile
       copy:
         src: files/Caddyfile
-        dest: /etc/caddy/Caddyfile
+        dest: "{{ app_dir }}/Caddyfile"
         owner: root
         group: root
         mode: "0644"
 
-    - name: Reiniciar caddy
-      systemd:
-        name: caddy
-        state: restarted
-        enabled: yes
-
-    - name: Pull y up (docker compose v2)
-      community.docker.docker_compose_v2:
-        project_src: "{{ app_dir }}"
-        pull: always
-        state: present
-        remove_orphans: true
-        recreate: always
+    - name: Pull y up (docker compose)
+      command: docker compose up -d --pull always --remove-orphans
+      args:
+        chdir: "{{ app_dir }}"
 
     - name: Mostrar estado de contenedores
       command: docker compose ps
