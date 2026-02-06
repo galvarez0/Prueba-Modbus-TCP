@@ -262,3 +262,112 @@ Repository → Settings → Security → Secrets and variables → Actions
 
 Fin del documento.
 
+---
+
+## 15. Recuperación de HTTPS (puerto 443) tras reprovisionamiento
+
+En escenarios de reprovisionamiento completo del servidor, reinstalación de dependencias
+o reinicio del servicio Caddy, puede ocurrir que el sistema quede sirviendo únicamente
+por HTTP (puerto 80) y el acceso HTTPS (puerto 443) deje de responder.
+
+Esta sección documenta **el procedimiento completo de recuperación de HTTPS**,
+sin modificar código de la aplicación.
+
+### 15.1 Síntoma
+
+- `curl https://dm-server-test.datamecanic.com/stats` falla con:
+  ```
+  Couldn't connect to server
+  ```
+- El servicio `caddy` está activo (`systemctl status caddy`)
+- `ss -lntp` muestra listener solo en `:80` y no en `:443`
+
+### 15.2 Verificación del estado de Caddy
+
+En el servidor remoto:
+
+```bash
+systemctl status caddy --no-pager
+ss -lntp | egrep ':(80|443)\s' || true
+```
+
+Si únicamente aparece `:80`, Caddy está operando en modo **HTTP-only**.
+
+### 15.3 Validación del Caddyfile
+
+```bash
+caddy validate --config /etc/caddy/Caddyfile
+```
+
+El Caddyfile **no debe forzar HTTP**. Configuración mínima correcta:
+
+```caddyfile
+dm-server-test.datamecanic.com {
+  reverse_proxy 127.0.0.1:8080
+}
+```
+
+⚠️ No utilizar:
+- `http://dm-server-test.datamecanic.com`
+- `:80` en el site label
+
+Forzar HTTP deshabilita HTTPS automáticamente.
+
+### 15.4 Recarga de Caddy
+
+```bash
+systemctl reload caddy
+```
+
+### 15.5 Confirmación de puertos
+
+```bash
+ss -lntp | egrep ':(80|443)\s'
+```
+
+Resultado esperado:
+- Listener activo en `:80`
+- Listener activo en `:443`
+
+### 15.6 Verificación final
+
+```bash
+curl https://dm-server-test.datamecanic.com/stats
+```
+
+Salida esperada cuando no hay slaves conectados:
+```json
+{}
+```
+
+### 15.7 Pruebas locales por IP (opcional)
+
+Al acceder por `127.0.0.1`, el certificado TLS no coincide con el hostname y puede fallar.
+Para probar HTTPS local forzando SNI:
+
+```bash
+curl -vk --resolve dm-server-test.datamecanic.com:443:127.0.0.1 \
+  https://dm-server-test.datamecanic.com/stats
+```
+
+### 15.8 Verificación del backend HTTP
+
+Caddy corre en el host, por lo que el backend debe estar accesible localmente:
+
+```bash
+curl http://127.0.0.1:8080/stats
+```
+
+Si falla, verificar que el servicio `modbus-server` publique el puerto:
+
+```yaml
+ports:
+  - "8080:8080"
+```
+
+### 15.9 Resultado esperado
+
+- Caddy sirviendo HTTPS correctamente en `:443`
+- Certificado TLS válido emitido por Let's Encrypt
+- Acceso funcional a `/stats` vía HTTPS
+- No se requirió modificar código de la aplicación
