@@ -1,0 +1,32 @@
+# ChirpStack configuration.
+# Este archivo vive dentro del "config-dir" que se pasa con -c / --config-dir.
+# Debe convivir con uno o más region_*.toml.  (ej: region_eu868.toml)
+
+[logging]
+level = "info"
+
+[postgresql]
+# DSN para Postgres dentro de docker-compose (service name: chirpstack-postgres)
+dsn = "postgres://chirpstack:chirpstack@chirpstack-postgres:5432/chirpstack?sslmode=disable"
+
+[redis]
+# Redis dentro de docker-compose (service name: chirpstack-redis)
+url = "redis://chirpstack-redis:6379"
+
+[mqtt]
+# Mosquitto dentro de docker-compose (service name: mosquitto)
+server = "tcp://mosquitto:1883"
+username = ""
+password = ""
+clean_session = false
+
+[api]
+# Bind interno del container (se publica como 127.0.0.1:8081 -> Caddy)
+bind = "0.0.0.0:8080"
+
+[network]
+# NetID por defecto (puedes ajustarlo si lo necesitas)
+net_id = "000000"
+
+# Regiones habilitadas: cada entrada debe corresponder a un [[regions]] id en region_*.toml
+enabled_regions = ["eu868"]

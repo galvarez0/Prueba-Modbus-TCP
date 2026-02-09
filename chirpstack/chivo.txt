@@ -1,0 +1,11 @@
+Lugares donde reviso códigos de ejemplo
+https://www.chirpstack.io/docs/getting-started/docker.html
+https://www.chirpstack.io/docs/chirpstack/configuration.html
+https://github.com/chirpstack/chirpstack-docker
+https://raw.githubusercontent.com/chirpstack/chirpstack-docker/master/docker-compose.yml
+https://hub.docker.com/r/chirpstack/chirpstack
+https://hub.docker.com/r/chirpstack/chirpstack-gateway-bridge
+https://hub.docker.com/r/chirpstack/chirpstack-rest-api
+https://support.chirpstack.io/questions/D1Va/how-to-configure-intergation-mqtt-configuration-section
+https://forum.chirpstack.io/t/basics-station-behind-reverse-proxy-with-tls-termination/22328
+https://www.caddyserver.com/docs/quick-starts/reverse-proxy
