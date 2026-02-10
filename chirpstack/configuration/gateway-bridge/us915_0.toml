@@ -1,0 +1,40 @@
+# ChirpStack Gateway Bridge configuration
+# Ref: https://www.chirpstack.io/docs/chirpstack-gateway-bridge/configuration.html
+
+[general]
+# debug=5, info=4, warning=3, error=2, fatal=1, panic=0
+log_level=4
+log_json=false
+log_to_syslog=false
+
+join_euis=[
+]
+
+[backend]
+type="semtech_udp"
+
+  [backend.semtech_udp]
+  udp_bind="0.0.0.0:1700"
+  fake_rx_time=false
+
+[integration]
+marshaler="protobuf"
+
+  [integration.mqtt]
+  event_topic_template="us915_0/gateway/{{ .GatewayID }}/event/{{ .EventType }}"
+  state_topic_template="us915_0/gateway/{{ .GatewayID }}/state/{{ .StateType }}"
+  command_topic_template="us915_0/gateway/{{ .GatewayID }}/command/#"
+  state_retained=true
+  keep_alive="30s"
+  max_reconnect_interval="1m0s"
+  terminate_on_connect_error=false
+
+    [integration.mqtt.auth]
+    type="generic"
+
+      [integration.mqtt.auth.generic]
+      servers=[
+        "tcp://mosquitto:1883",
+      ]
+      username=""
+      password=""

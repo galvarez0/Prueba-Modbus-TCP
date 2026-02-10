@@ -1,0 +1,55 @@
+# ChirpStack Gateway Bridge configuration
+# Ref: https://www.chirpstack.io/docs/chirpstack-gateway-bridge/configuration.html
+
+[general]
+# debug=5, info=4, warning=3, error=2, fatal=1, panic=0
+log_level=4
+log_json=false
+log_to_syslog=false
+
+# JoinEUI filters.
+#
+# The configured JoinEUI ranges will be used to filter join-requests.
+# When left blank, no filtering will be performed on JoinEUIs.
+join_euis=[
+]
+
+# Gateway backend configuration.
+[backend]
+# Valid options are:
+#   * semtech_udp
+#   * concentratord
+#   * basic_station
+type="semtech_udp"
+
+  # Semtech UDP packet-forwarder backend.
+  [backend.semtech_udp]
+  # Example: 0.0.0.0:1700 to listen on port 1700 for all network interfaces.
+  udp_bind="0.0.0.0:1700"
+  fake_rx_time=false
+
+# Integration configuration.
+[integration]
+# Valid options are:
+#   * protobuf
+#   * json
+marshaler="protobuf"
+
+  [integration.mqtt]
+  event_topic_template="eu868/gateway/{{ .GatewayID }}/event/{{ .EventType }}"
+  state_topic_template="eu868/gateway/{{ .GatewayID }}/state/{{ .StateType }}"
+  command_topic_template="eu868/gateway/{{ .GatewayID }}/command/#"
+  state_retained=true
+  keep_alive="30s"
+  max_reconnect_interval="1m0s"
+  terminate_on_connect_error=false
+
+    [integration.mqtt.auth]
+    type="generic"
+
+      [integration.mqtt.auth.generic]
+      servers=[
+        "tcp://mosquitto:1883",
+      ]
+      username=""
+      password=""
