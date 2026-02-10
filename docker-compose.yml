@@ -53,6 +53,151 @@ services:
     networks:
       - pruebatcp1
 
+  chirpstack-postgresql:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=chirpstack
+      - POSTGRES_USER=chirpstack
+      - POSTGRES_PASSWORD=chirpstack
+    volumes:
+      - ./chirpstack/configuration/postgresql/initdb:/docker-entrypoint-initdb.d:ro
+      - chirpstack-postgresql-data:/var/lib/postgresql/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - pruebatcp1
+
+  chirpstack-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - chirpstack-redis-data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - pruebatcp1
+
+  chirpstack:
+    image: chirpstack/chirpstack:4
+    restart: unless-stopped
+    command: ["-c", "/etc/chirpstack"]
+    volumes:
+      - ./chirpstack/configuration/chirpstack:/etc/chirpstack:ro
+    depends_on:
+      chirpstack-postgresql:
+        condition: service_started
+      chirpstack-redis:
+        condition: service_started
+      mosquitto:
+        condition: service_healthy
+    ports:
+      # UI / HTTP de ChirpStack (container 8080) -> host 127.0.0.1:8082 (para Caddy)
+      - "127.0.0.1:8082:8080"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - pruebatcp1
+
+  chirpstack-rest-api:
+    image: chirpstack/chirpstack-rest-api:4
+    restart: unless-stopped
+    command:
+      - --server
+      - chirpstack:8080
+      - --bind
+      - 0.0.0.0:8090
+      - --insecure
+    depends_on:
+      chirpstack:
+        condition: service_started
+    ports:
+      - "127.0.0.1:8090:8090"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - pruebatcp1
+
+  # Gateway Bridge por región (Semtech UDP), 3 instancias en paralelo:
+  # - EU868: 1700/udp
+  # - US915_0: 1701/udp (mapeado a 1700 dentro del contenedor)
+  # - AU915_0: 1702/udp (mapeado a 1700 dentro del contenedor)
+  #
+  # Configuración: https://www.chirpstack.io/docs/chirpstack-gateway-bridge/configuration.html
+
+  chirpstack-gateway-bridge-eu868:
+    image: chirpstack/chirpstack-gateway-bridge:4
+    restart: unless-stopped
+    command: ["-c", "/etc/chirpstack-gateway-bridge/chirpstack-gateway-bridge.toml"]
+    volumes:
+      - ./chirpstack/configuration/gateway-bridge/eu868.toml:/etc/chirpstack-gateway-bridge/chirpstack-gateway-bridge.toml:ro
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    ports:
+      - "1700:1700/udp"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - pruebatcp1
+
+  chirpstack-gateway-bridge-us915-0:
+    image: chirpstack/chirpstack-gateway-bridge:4
+    restart: unless-stopped
+    command: ["-c", "/etc/chirpstack-gateway-bridge/chirpstack-gateway-bridge.toml"]
+    volumes:
+      - ./chirpstack/configuration/gateway-bridge/us915_0.toml:/etc/chirpstack-gateway-bridge/chirpstack-gateway-bridge.toml:ro
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    ports:
+      - "1701:1700/udp"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - pruebatcp1
+
+  chirpstack-gateway-bridge-au915-0:
+    image: chirpstack/chirpstack-gateway-bridge:4
+    restart: unless-stopped
+    command: ["-c", "/etc/chirpstack-gateway-bridge/chirpstack-gateway-bridge.toml"]
+    volumes:
+      - ./chirpstack/configuration/gateway-bridge/au915_0.toml:/etc/chirpstack-gateway-bridge/chirpstack-gateway-bridge.toml:ro
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    ports:
+      - "1702:1700/udp"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - pruebatcp1
+
 networks:
   pruebatcp1:
     driver: bridge
+
+volumes:
+  chirpstack-postgresql-data:
+  chirpstack-redis-data:
