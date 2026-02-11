@@ -17,6 +17,7 @@ services:
         max-file: "3"
     networks:
       - pruebatcp1
+    profiles: ["modbus", "lorawan", "sim", "bridge", "obs"]
 
   modbus-server:
     build:
@@ -38,6 +39,7 @@ services:
         max-file: "3"
     networks:
       - pruebatcp1
+    profiles: ["modbus", "bridge"]
 
   modbus-client-1:
     image: galvarez0/pruebatcp1:modbus-client
@@ -45,6 +47,7 @@ services:
     restart: unless-stopped
     networks:
       - pruebatcp1
+    profiles: ["modbus"]
 
   modbus-client-2:
     image: galvarez0/pruebatcp1:modbus-client
@@ -52,6 +55,7 @@ services:
     restart: unless-stopped
     networks:
       - pruebatcp1
+    profiles: ["modbus"]
 
   chirpstack-postgresql:
     image: postgres:16-alpine
@@ -70,6 +74,7 @@ services:
         max-file: "3"
     networks:
       - pruebatcp1
+    profiles: ["lorawan", "sim", "bridge", "obs"]
 
   chirpstack-redis:
     image: redis:7-alpine
@@ -83,6 +88,7 @@ services:
         max-file: "3"
     networks:
       - pruebatcp1
+    profiles: ["lorawan", "sim", "bridge", "obs"]
 
   chirpstack:
     image: chirpstack/chirpstack:4
@@ -107,6 +113,7 @@ services:
         max-file: "3"
     networks:
       - pruebatcp1
+    profiles: ["lorawan", "sim", "bridge", "obs"]
 
   chirpstack-rest-api:
     image: chirpstack/chirpstack-rest-api:4
@@ -129,32 +136,7 @@ services:
         max-file: "3"
     networks:
       - pruebatcp1
-
-  # Gateway Bridge por región (Semtech UDP), 3 instancias en paralelo:
-  # - EU868: 1700/udp
-  # - US915_0: 1701/udp (mapeado a 1700 dentro del contenedor)
-  # - AU915_0: 1702/udp (mapeado a 1700 dentro del contenedor)
-  #
-  # Configuración: https://www.chirpstack.io/docs/chirpstack-gateway-bridge/configuration.html
-
-  chirpstack-gateway-bridge-eu868:
-    image: chirpstack/chirpstack-gateway-bridge:4
-    restart: unless-stopped
-    command: ["-c", "/etc/chirpstack-gateway-bridge/chirpstack-gateway-bridge.toml"]
-    volumes:
-      - ./chirpstack/configuration/gateway-bridge/eu868.toml:/etc/chirpstack-gateway-bridge/chirpstack-gateway-bridge.toml:ro
-    depends_on:
-      mosquitto:
-        condition: service_healthy
-    ports:
-      - "1700:1700/udp"
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-    networks:
-      - pruebatcp1
+    profiles: ["lorawan", "sim", "bridge", "obs"]
 
   chirpstack-gateway-bridge-us915-0:
     image: chirpstack/chirpstack-gateway-bridge:4
@@ -166,7 +148,8 @@ services:
       mosquitto:
         condition: service_healthy
     ports:
-      - "1701:1700/udp"
+      - "1700:1700/udp"
+      - "127.0.0.1:9100:9100"
     logging:
       driver: json-file
       options:
@@ -174,6 +157,28 @@ services:
         max-file: "3"
     networks:
       - pruebatcp1
+    profiles: ["lorawan", "sim", "bridge", "obs"]
+
+  chirpstack-gateway-bridge-eu868:
+    image: chirpstack/chirpstack-gateway-bridge:4
+    restart: unless-stopped
+    command: ["-c", "/etc/chirpstack-gateway-bridge/chirpstack-gateway-bridge.toml"]
+    volumes:
+      - ./chirpstack/configuration/gateway-bridge/eu868.toml:/etc/chirpstack-gateway-bridge/chirpstack-gateway-bridge.toml:ro
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    ports:
+      - "1701:1700/udp"
+      - "127.0.0.1:9101:9100"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - pruebatcp1
+    profiles: ["lorawan", "sim", "bridge", "obs"]
 
   chirpstack-gateway-bridge-au915-0:
     image: chirpstack/chirpstack-gateway-bridge:4
@@ -186,6 +191,7 @@ services:
         condition: service_healthy
     ports:
       - "1702:1700/udp"
+      - "127.0.0.1:9102:9100"
     logging:
       driver: json-file
       options:
@@ -193,6 +199,122 @@ services:
         max-file: "3"
     networks:
       - pruebatcp1
+    profiles: ["lorawan", "sim", "bridge", "obs"]
+
+  # AS923_4 -> 1703/udp (mapeado a 1700 dentro del contenedor)
+  chirpstack-gateway-bridge-as923-4:
+    image: chirpstack/chirpstack-gateway-bridge:4
+    restart: unless-stopped
+    command: ["-c", "/etc/chirpstack-gateway-bridge/chirpstack-gateway-bridge.toml"]
+    volumes:
+      - ./chirpstack/configuration/gateway-bridge/as923_4.toml:/etc/chirpstack-gateway-bridge/chirpstack-gateway-bridge.toml:ro
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    ports:
+      - "1703:1700/udp"
+      - "127.0.0.1:9103:9100"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - pruebatcp1
+    profiles: ["lorawan", "sim", "bridge", "obs"]
+
+  lorawan-modbus-bridge:
+    build:
+      context: ./lorawan-modbus-bridge
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - MQTT_BROKER=tcp://mosquitto:1883
+      # Por defecto solo loguea y NO escribe a Modbus hasta que definas MODBUS_WRITE_URL:
+      # Ej: http://modbus-server:8080/write?unit=1&addr=1&value=123
+      - MODBUS_WRITE_URL=
+      # Topic(s) MQTT: doc oficial sugiere application/APPLICATION_ID/device/+/event/up
+      - MQTT_SUB_TOPIC=application/+/device/+/event/up
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+      modbus-server:
+        condition: service_started
+      chirpstack:
+        condition: service_started
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - pruebatcp1
+    profiles: ["bridge"]
+
+  chirpstack-simulator:
+    build:
+      context: ./simulator
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      chirpstack:
+        condition: service_started
+      mosquitto:
+        condition: service_healthy
+    volumes:
+      - ./simulator/chirpstack-simulator.toml:/etc/chirpstack-simulator.toml:ro
+    command: ["-c", "/etc/chirpstack-simulator.toml"]
+    ports:
+      - "127.0.0.1:9000:9000"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - pruebatcp1
+    profiles: ["sim"]
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8089:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    privileged: true
+    networks:
+      - pruebatcp1
+    profiles: ["obs"]
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9091:9090"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    networks:
+      - pruebatcp1
+    profiles: ["obs"]
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - pruebatcp1
+    profiles: ["obs"]
 
 networks:
   pruebatcp1:
@@ -201,3 +323,5 @@ networks:
 volumes:
   chirpstack-postgresql-data:
   chirpstack-redis-data:
+  prometheus_data:
+  grafana_data:

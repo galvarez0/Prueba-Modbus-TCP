@@ -38,3 +38,7 @@ marshaler="protobuf"
       ]
       username=""
       password=""
+[metrics]
+  [metrics.prometheus]
+  endpoint_enabled=true
+  bind="0.0.0.0:9100"

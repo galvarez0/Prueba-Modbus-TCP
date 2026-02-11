@@ -1,32 +1,72 @@
 # ChirpStack configuration.
 # Este archivo vive dentro del "config-dir" que se pasa con -c / --config-dir.
-# Debe convivir con uno o más region_*.toml.  (ej: region_eu868.toml)
+# Debe convivir con uno o más region_*.toml.  (ej: region_us915.toml)
 
 [logging]
 level = "info"
+json = false
 
 [postgresql]
-# DSN para Postgres dentro de docker-compose (service name: chirpstack-postgres)
-dsn = "postgres://chirpstack:chirpstack@chirpstack-postgres:5432/chirpstack?sslmode=disable"
+dsn = "postgresql://chirpstack:chirpstack@chirpstack-postgresql/chirpstack?sslmode=disable"
+max_open_connections = 10
+ca_cert = ""
+
+[sqlite]
+path = "sqlite://chirpstack.sqlite"
+max_open_connections = 4
+pragmas = [
+  "busy_timeout = 1000",
+  "foreign_keys = ON",
+]
 
 [redis]
-# Redis dentro de docker-compose (service name: chirpstack-redis)
-url = "redis://chirpstack-redis:6379"
+servers = [
+  "redis://chirpstack-redis/",
+]
+cluster = false
+key_prefix = ""
+max_open_connections = 100
+min_idle_connections = 0
 
-[mqtt]
-# Mosquitto dentro de docker-compose (service name: mosquitto)
-server = "tcp://mosquitto:1883"
-username = ""
-password = ""
-clean_session = false
-
+#PENDIENTE PONER SECRET
 [api]
 # Bind interno del container (se publica como 127.0.0.1:8081 -> Caddy)
 bind = "0.0.0.0:8080"
+secret = ""
 
 [network]
-# NetID por defecto (puedes ajustarlo si lo necesitas)
 net_id = "000000"
+secondary_net_ids = []
+dev_addr_prefixes = []
+enabled_regions = [
+  "us915_0",
+  "eu868",
+  "au915_0",
+  "as923_4",
+]
+deduplication_delay = "200ms"
+get_downlink_data_delay = "100ms"
+mac_commands_disabled = false
+adr_plugins = []
 
-# Regiones habilitadas: cada entrada debe corresponder a un [[regions]] id en region_*.toml
-enabled_regions = ["eu868"]
+[network.scheduler]
+interval = "1s"
+class_a_lock_duration = "5s"
+class_c_lock_duration = "5s"
+multicast_class_c_margin = "5s"
+multicast_class_b_margin = "5s"
+
+[integration]
+enabled = [
+  "mqtt",
+]
+
+[integration.mqtt]
+server = "tcp://mosquitto:1883/"
+json = true
+username = ""
+password = ""
+qos = 0
+clean_session = false
+client_id = ""
+keep_alive_interval = "30s"
