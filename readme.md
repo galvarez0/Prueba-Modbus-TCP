@@ -1,22 +1,23 @@
 # Prueba Modbus TCP
-Guía de instalación, compilación, despliegue y verificación
 
-Este documento describe cómo instalar, compilar, desplegar y verificar el proyecto **Prueba Modbus TCP**, tanto en local como en un servidor remoto usando Docker, Docker Compose, Ansible y GitHub Actions.
+Guía completa de instalación, despliegue y verificación del stack Modbus TCP + ChirpStack (LoRaWAN).
 
 ---
 
 ## 1. Descripción general
 
-El proyecto implementa un sistema compuesto por:
+Este proyecto implementa un stack de pruebas y desarrollo que integra:
 
-- Modbus TCP MASTER (server)
-- Modbus TCP SLAVES (clients)
-- Mosquitto (MQTT)
-- API HTTP para control y pruebas
+- Modbus TCP Server (master) con API HTTP
+- Múltiples Modbus TCP Clients (slaves)
+- Mosquitto (broker MQTT)
+- ChirpStack LoRaWAN Network Server (multi-región)
 - Caddy como reverse proxy HTTPS
-- Docker / Docker Compose para despliegue
+- Docker y Docker Compose
 - Ansible para provisión remota
 - GitHub Actions para build y push de imágenes
+
+El despliegue estándar se realiza en `/opt/pruebatcp1`.
 
 ---
 
@@ -28,17 +29,17 @@ El proyecto implementa un sistema compuesto por:
 - Docker Compose (plugin `docker compose`)
 - Make
 - curl
-- jq (opcional, para pretty print de JSON)
+- jq (opcional)
 
 ### Servidor remoto
 - Ubuntu
-- Acceso root por SSH mediante clave
-- Dominio apuntando al servidor (ej. dm-server-test.datamecanic.com)
-- Ruta fija de despliegue: `/opt/pruebatcp1`
+- Acceso root por SSH
+- Dominio apuntando al servidor
+- Docker + Docker Compose
 
 ---
 
-## 3. Compilación local de binarios (sin Docker)
+## 3. Compilación local (sin Docker)
 
 ### Server
 ```bash
@@ -56,7 +57,7 @@ Estos comandos generan binarios estáticos compatibles con Alpine Linux.
 
 ---
 
-## 4. Ejecución local sin Docker (modo desarrollo)
+## 4. Ejecución local sin Docker
 
 ### Mosquitto
 ```bash
@@ -76,23 +77,27 @@ mosquitto -p 1883
 
 ---
 
-## 5. Ejecución con Docker Compose (local o servidor)
+## 5. Ejecución con Docker Compose
 
 ```bash
 docker compose up -d
-docker compose logs -f
+docker compose ps
 ```
 
-Detener el stack:
+### Logs (solo recientes)
+```bash
+docker compose logs -f --since 5s modbus-server
+docker compose logs -f --since 5s mosquitto
+```
+
+### Parada
 ```bash
 docker compose down
 ```
 
 ---
 
-## 6. Acceso SSH al servidor remoto
-
-El acceso al servidor se realiza exclusivamente mediante clave SSH:
+## 6. Acceso SSH al servidor
 
 ```bash
 ssh root@138.197.101.64 -i mykey
@@ -106,27 +111,19 @@ cd /opt/pruebatcp1
 
 ---
 
-## 7. Recompilación y redeploy en el servidor remoto
-
-### Rebuild completo del server usando Docker (multi-stage)
+## 7. Rebuild y redeploy remoto
 
 ```bash
-cd /opt/pruebatcp1
 docker compose build --no-cache modbus-server
 docker compose up -d --force-recreate modbus-server
-```
-
-### Ver logs del server
-```bash
-docker compose logs -f modbus-server
+docker compose logs -f --since 5s modbus-server
 ```
 
 ---
 
-## 8. Validación de la API HTTP
+## 8. API HTTP Modbus
 
-### 8.1 Estado inicial del sistema
-
+### Estado
 ```bash
 curl -sS "https://dm-server-test.datamecanic.com/stats"
 ```
@@ -136,15 +133,13 @@ Salida esperada cuando no hay slaves conectados:
 {}
 ```
 
-### 8.2 Conexión de slaves
-
+### Conectar clientes
 ```bash
 curl "https://dm-server-test.datamecanic.com/connect?id=1&host=modbus-client-1&port=5021"
 curl "https://dm-server-test.datamecanic.com/connect?id=2&host=modbus-client-2&port=5021"
 ```
 
-### 8.3 Verificación de estado (JSON)
-
+### Tráfico Modbus
 ```bash
 curl -sS "https://dm-server-test.datamecanic.com/stats"
 ```
@@ -157,217 +152,85 @@ curl -sS "https://dm-server-test.datamecanic.com/stats" | jq .
 
 ---
 
-## 9. Producción de tráfico Modbus (prueba de flujo)
+## 9. ChirpStack / LoRaWAN
 
-Secuencia recomendada de pruebas:
+### Regiones activas
+- US915 (default)
+- EU868
+- AU915
 
-1. Verificar estado inicial:
-```bash
-curl -sS "https://dm-server-test.datamecanic.com/stats"
+Definidas en:
+```
+chirpstack/configuration/chirpstack/chirpstack.toml
 ```
 
-2. Conectar slave 1:
+### Reinicio tras cambios de configuración
 ```bash
-curl "https://dm-server-test.datamecanic.com/connect?id=1&host=modbus-client-1&port=5021"
+docker compose up -d --force-recreate chirpstack
+docker compose logs -f --since 5s chirpstack
 ```
 
-3. Conectar slave 2:
-```bash
-curl "https://dm-server-test.datamecanic.com/connect?id=2&host=modbus-client-2&port=5021"
-```
+### Logs esperados correctos
+- Connecting to MQTT broker tcp://mosquitto:1883
+- Setting up gateway backend for region ...
+- Sin errores Connection refused
 
-4. Verificar estado final:
-```bash
-curl -sS "https://dm-server-test.datamecanic.com/stats"
-```
-
-### Generación de tráfico Modbus
-
-```bash
-curl "https://dm-server-test.datamecanic.com/test?id=1"
-curl "https://dm-server-test.datamecanic.com/read?id=1&addr=0&qty=1"
-curl "https://dm-server-test.datamecanic.com/write?id=1&addr=0&values=10,11,12"
-```
+Si aparecen errores:
+- Revisar que ninguna región apunte a localhost / 127.0.0.1
+- Revisar que no haya regiones habilitadas sin su region_*.toml
 
 ---
 
-## 10. Ansible
+## 10. UI de ChirpStack
 
-### Bootstrap (una sola vez)
+Accesible vía Caddy en el subdominio configurado.
+Usuario inicial:
+- admin / admin
+
+---
+
+## 11. Ansible
+
+### Bootstrap (una vez)
 ```bash
 ansible-playbook -i ansible/inventory.ini ansible/bootstrap.yml
 ```
 
-### Despliegue normal
+### Despliegue completo
 ```bash
 make provision
 ```
 
-Este comando:
-- Sincroniza archivos
-- Actualiza imágenes
-- Levanta el stack completo
+---
+
+## 12. GitHub Actions
+
+Pipeline automático para:
+- Build de server y client
+- Build de imágenes Docker
+- Push a Docker Hub
+
+Secrets requeridos:
+- DOCKERHUB_USERNAME
+- DOCKERHUB_TOKEN
 
 ---
 
-## 11. GitHub Actions
+## 13. Problemas comunes
 
-El repositorio incluye un workflow de **Build & Docker Push** que:
-
-- Compila server y client
-- Construye imágenes Docker
-- Publica las imágenes en Docker Hub
-
-### Secrets requeridos
-
-- `DOCKERHUB_USERNAME`
-- `DOCKERHUB_TOKEN`
-
-Ruta:
-```
-Repository → Settings → Security → Secrets and variables → Actions
-```
+- Logs viejos: usar siempre `--since`
+- MQTT refused: revisar backend MQTT de regiones
+- Cambios no aplican: reiniciar contenedor correspondiente
+- HTTPS caído: validar Caddyfile y recargar Caddy
 
 ---
 
-## 12. Reglas importantes
-
-- Cambios en archivos `.go` requieren recompilar binarios y reconstruir imágenes
-- Cambios en Dockerfile requieren rebuild de imágenes
-- Cambios en `docker-compose.yml` no requieren recompilar binarios
-- El despliegue remoto siempre ocurre en `/opt/pruebatcp1`
-
----
-
-## 13. Errores comunes
-
-- `/stats` devuelve `{}`: no hay slaves conectados
-- `/stats` vacío con slaves conectados: binario no recompilado
-- `connection refused`: Mosquitto no está healthy
-- Error DNS Docker: clientes no levantados en la red
-
----
-
-## 14. Resumen rápido
-
-| Acción | Comando |
-|------|--------|
-| Acceso SSH | `ssh root@138.197.101.64 -i mykey` |
-| Rebuild server | `docker compose build --no-cache modbus-server` |
-| Redeploy server | `docker compose up -d --force-recreate modbus-server` |
-| Ver logs | `docker compose logs -f modbus-server` |
-| Estado | `GET /stats` |
-
----
-
-Fin del documento.
-
----
-
-## 15. Recuperación de HTTPS (puerto 443) tras reprovisionamiento
-
-En escenarios de reprovisionamiento completo del servidor, reinstalación de dependencias
-o reinicio del servicio Caddy, puede ocurrir que el sistema quede sirviendo únicamente
-por HTTP (puerto 80) y el acceso HTTPS (puerto 443) deje de responder.
-
-Esta sección documenta **el procedimiento completo de recuperación de HTTPS**,
-sin modificar código de la aplicación.
-
-### 15.1 Síntoma
-
-- `curl https://dm-server-test.datamecanic.com/stats` falla con:
-  ```
-  Couldn't connect to server
-  ```
-- El servicio `caddy` está activo (`systemctl status caddy`)
-- `ss -lntp` muestra listener solo en `:80` y no en `:443`
-
-### 15.2 Verificación del estado de Caddy
-
-En el servidor remoto:
+## 14. Comandos rápidos
 
 ```bash
-systemctl status caddy --no-pager
-ss -lntp | egrep ':(80|443)\s' || true
+docker compose up -d --force-recreate chirpstack
+docker compose logs -f --since 5s chirpstack
+
+docker compose logs -f --since 5s modbus-server
+docker compose ps
 ```
-
-Si únicamente aparece `:80`, Caddy está operando en modo **HTTP-only**.
-
-### 15.3 Validación del Caddyfile
-
-```bash
-caddy validate --config /etc/caddy/Caddyfile
-```
-
-El Caddyfile **no debe forzar HTTP**. Configuración mínima correcta:
-
-```caddyfile
-dm-server-test.datamecanic.com {
-  reverse_proxy 127.0.0.1:8080
-}
-```
-
-⚠️ No utilizar:
-- `http://dm-server-test.datamecanic.com`
-- `:80` en el site label
-
-Forzar HTTP deshabilita HTTPS automáticamente.
-
-### 15.4 Recarga de Caddy
-
-```bash
-systemctl reload caddy
-```
-
-### 15.5 Confirmación de puertos
-
-```bash
-ss -lntp | egrep ':(80|443)\s'
-```
-
-Resultado esperado:
-- Listener activo en `:80`
-- Listener activo en `:443`
-
-### 15.6 Verificación final
-
-```bash
-curl https://dm-server-test.datamecanic.com/stats
-```
-
-Salida esperada cuando no hay slaves conectados:
-```json
-{}
-```
-
-### 15.7 Pruebas locales por IP (opcional)
-
-Al acceder por `127.0.0.1`, el certificado TLS no coincide con el hostname y puede fallar.
-Para probar HTTPS local forzando SNI:
-
-```bash
-curl -vk --resolve dm-server-test.datamecanic.com:443:127.0.0.1 \
-  https://dm-server-test.datamecanic.com/stats
-```
-
-### 15.8 Verificación del backend HTTP
-
-Caddy corre en el host, por lo que el backend debe estar accesible localmente:
-
-```bash
-curl http://127.0.0.1:8080/stats
-```
-
-Si falla, verificar que el servicio `modbus-server` publique el puerto:
-
-```yaml
-ports:
-  - "8080:8080"
-```
-
-### 15.9 Resultado esperado
-
-- Caddy sirviendo HTTPS correctamente en `:443`
-- Certificado TLS válido emitido por Let's Encrypt
-- Acceso funcional a `/stats` vía HTTPS
-- No se requirió modificar código de la aplicación

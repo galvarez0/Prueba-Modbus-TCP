@@ -28,11 +28,10 @@ key_prefix = ""
 max_open_connections = 100
 min_idle_connections = 0
 
-#PENDIENTE PONER SECRET
 [api]
 # Bind interno del container (se publica como 127.0.0.1:8081 -> Caddy)
 bind = "0.0.0.0:8080"
-secret = ""
+secret = "dev-secret-2026-chirpstack-pruebatcp1"
 
 [network]
 net_id = "000000"
@@ -42,7 +41,6 @@ enabled_regions = [
   "us915_0",
   "eu868",
   "au915_0",
-  "as923_4",
 ]
 deduplication_delay = "200ms"
 get_downlink_data_delay = "100ms"

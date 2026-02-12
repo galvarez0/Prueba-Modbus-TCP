@@ -1,94 +1,144 @@
 # This file contains an example EU868 configuration.
-# Importante: el "topic_prefix" debe coincidir con el prefijo usado por el Gateway Bridge.
-
 [[regions]]
-id = "eu868"
-description = "EU868"
-common_name = "EU868"
 
+  id = "eu868"
+  description = "EU868"
+  common_name = "EU868"
+  user_info = ""
+
+  # Gateway configuration.
   [regions.gateway]
-  topic_prefix = "eu868"
 
+    # Force gateways as private.
+    force_gws_private = false
+
+    # Gateway backend configuration.
+    [regions.gateway.backend]
+
+      # The enabled backend type.
+      enabled = "mqtt"
+
+      # MQTT configuration.
+      [regions.gateway.backend.mqtt]
+
+        # Topic prefix (defines region).
+        topic_prefix = "eu868"
+
+        # Shared subscription name.
+        share_name = "chirpstack"
+
+        # MQTT server (docker service name).
+        server = "tcp://mosquitto:1883"
+
+        username = ""
+        password = ""
+
+        qos = 0
+        clean_session = false
+        client_id = ""
+        keep_alive_interval = "30s"
+
+        ca_cert = ""
+        tls_cert = ""
+        tls_key = ""
+
+  # Region specific network configuration.
   [regions.network]
-  mac_version = "LORAWAN_1_0_3"
-  reg_params_revision = "A"
 
-  adr_disabled = false
+    installation_margin = 10
+    rx_window = 0
+    rx1_delay = 1
+    rx1_dr_offset = 0
 
-  min_dr = 0
-  max_dr = 7
+    # EU868 RX2 defaults (commonly used)
+    rx2_dr = 0
+    rx2_frequency = 869525000
 
-  [regions.network.rejoin_request]
-  enabled = true
+    rx2_prefer_on_rx1_dr_lt = 0
+    rx2_prefer_on_link_budget = false
+    downlink_tx_power = -1
 
-  [regions.network.class_b]
-  ping_slot_dr = 3
-  ping_slot_frequency = 869525000
+    adr_disabled = false
+    min_dr = 0
+    max_dr = 7
 
-  [regions.network.class_c]
-  rx2_frequency = 869525000
-  rx2_dr = 0
+    # Enabled uplink channels (EU868 default 3)
+    [[regions.network.chan_plan.channels]]
+      frequency = 868100000
+      min_dr = 0
+      max_dr = 5
 
-  [regions.network.chan_plan]
-  [[regions.network.chan_plan.channels]]
-  frequency = 868100000
-  min_dr = 0
-  max_dr = 5
+    [[regions.network.chan_plan.channels]]
+      frequency = 868300000
+      min_dr = 0
+      max_dr = 5
 
-  [[regions.network.chan_plan.channels]]
-  frequency = 868300000
-  min_dr = 0
-  max_dr = 5
+    [[regions.network.chan_plan.channels]]
+      frequency = 868500000
+      min_dr = 0
+      max_dr = 5
 
-  [[regions.network.chan_plan.channels]]
-  frequency = 868500000
-  min_dr = 0
-  max_dr = 5
+    # Data-rates (EU868 set)
+    [[regions.network.chan_plan.data_rates]]
+      modulation = "LORA"
+      spreading_factor = 12
+      bandwidth = 125000
+      bitrate = 0
 
-  [[regions.network.chan_plan.data_rates]]
-  modulation = "LORA"
-  spreading_factor = 12
-  bandwidth = 125000
-  bitrate = 0
+    [[regions.network.chan_plan.data_rates]]
+      modulation = "LORA"
+      spreading_factor = 11
+      bandwidth = 125000
+      bitrate = 0
 
-  [[regions.network.chan_plan.data_rates]]
-  modulation = "LORA"
-  spreading_factor = 11
-  bandwidth = 125000
-  bitrate = 0
+    [[regions.network.chan_plan.data_rates]]
+      modulation = "LORA"
+      spreading_factor = 10
+      bandwidth = 125000
+      bitrate = 0
 
-  [[regions.network.chan_plan.data_rates]]
-  modulation = "LORA"
-  spreading_factor = 10
-  bandwidth = 125000
-  bitrate = 0
+    [[regions.network.chan_plan.data_rates]]
+      modulation = "LORA"
+      spreading_factor = 9
+      bandwidth = 125000
+      bitrate = 0
 
-  [[regions.network.chan_plan.data_rates]]
-  modulation = "LORA"
-  spreading_factor = 9
-  bandwidth = 125000
-  bitrate = 0
+    [[regions.network.chan_plan.data_rates]]
+      modulation = "LORA"
+      spreading_factor = 8
+      bandwidth = 125000
+      bitrate = 0
 
-  [[regions.network.chan_plan.data_rates]]
-  modulation = "LORA"
-  spreading_factor = 8
-  bandwidth = 125000
-  bitrate = 0
+    [[regions.network.chan_plan.data_rates]]
+      modulation = "LORA"
+      spreading_factor = 7
+      bandwidth = 125000
+      bitrate = 0
 
-  [[regions.network.chan_plan.data_rates]]
-  modulation = "LORA"
-  spreading_factor = 7
-  bandwidth = 125000
-  bitrate = 0
+    [[regions.network.chan_plan.data_rates]]
+      modulation = "LORA"
+      spreading_factor = 7
+      bandwidth = 250000
+      bitrate = 0
 
-  [[regions.network.chan_plan.data_rates]]
-  modulation = "LORA"
-  spreading_factor = 7
-  bandwidth = 250000
-  bitrate = 0
+    [[regions.network.chan_plan.data_rates]]
+      modulation = "FSK"
+      spreading_factor = 0
+      bandwidth = 0
+      bitrate = 50000
 
-  [[regions.network.chan_plan.data_rates]]
-  modulation = "FSK"
-  spreading_factor = 0
-  bandwidth = 0
-  bitrate = 50000
+    # Rejoin-request configuration (LoRaWAN 1.1)
+    [regions.network.rejoin_request]
+      enabled = true
+      max_count_n = 0
+      max_time_n = 0
+
+    # Class-B configuration.
+    [regions.network.class_b]
+      ping_slot_dr = 3
+      ping_slot_frequency = 869525000
+
+    # Class-C configuration.
+    [regions.network.class_c]
+      rx2_frequency = 869525000
+      rx2_dr = 0

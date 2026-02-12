@@ -53,7 +53,14 @@
       changed_when: false
 
     - name: Pull y up (docker compose)
-      command: docker compose up -d --pull always --remove-orphans
+      command: >
+        docker compose
+        --profile modbus
+        --profile lorawan
+        --profile bridge
+        --profile sim
+        --profile obs
+        up -d --pull always --remove-orphans
       args:
         chdir: "{{ app_dir }}"
 
