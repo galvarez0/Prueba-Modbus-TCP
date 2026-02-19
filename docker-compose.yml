@@ -17,7 +17,7 @@ services:
         max-file: "3"
     networks:
       - pruebatcp1
-    profiles: ["modbus", "lorawan", "sim", "bridge", "obs"]
+    profiles: ["modbus", "lorawan", "sim", "bridge", "obs", "demo", "ingest", "actions"]
 
   modbus-server:
     build:
@@ -75,6 +75,25 @@ services:
     networks:
       - pruebatcp1
     profiles: ["lorawan", "sim", "bridge", "obs"]
+
+  telemetry-postgresql:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=telemetry
+      - POSTGRES_USER=telemetry
+      - POSTGRES_PASSWORD=telemetry
+    volumes:
+      - ./telemetry-postgresql/initdb:/docker-entrypoint-initdb.d:ro
+      - telemetry-postgresql-data:/var/lib/postgresql/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - pruebatcp1
+    profiles: ["demo", "actions", "ingest"]
 
   chirpstack-redis:
     image: redis:7-alpine
@@ -275,6 +294,57 @@ services:
       - pruebatcp1
     profiles: ["sim"]
 
+  sensor-gateway-go:
+    build:
+      context: ./sensor-gateway-go
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - MQTT_BROKER=tcp://mosquitto:1883
+      - SENSOR_TOPIC_BASE=sensors
+      - PUBLISH_EVERY=5s
+      - SENSOR_IDS=gw-1,gw-2,gw-3
+      - TELEMETRY_POSTGRES_DSN=postgresql://telemetry:telemetry@telemetry-postgresql/telemetry?sslmode=disable
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+      telemetry-postgresql:
+        condition: service_started
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - pruebatcp1
+    profiles: ["demo"]
+
+  clickhouse-ingestor:
+    build:
+      context: ./clickhouse-ingestor
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - MQTT_BROKER=tcp://mosquitto:1883
+      - SENSOR_SUB_TOPIC=sensors/+/telemetry
+      - CHIRPSTACK_DEVICE_SUB_TOPIC=application/+/device/+/event/+
+      - CHIRPSTACK_GW_SUB_TOPIC=+/gateway/+/event/+
+      # URGENTE: CONFIGURAR CLICKHOUSE_DSN A TU INSTANCIA EXTERNA
+      - CLICKHOUSE_DSN=clickhouse://user:pass@host:8443/default
+      - CLICKHOUSE_DATABASE=default
+      - CLICKHOUSE_TLS=true
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - pruebatcp1
+    profiles: ["ingest"]
+
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:v0.49.1
     restart: unless-stopped
@@ -323,5 +393,6 @@ networks:
 volumes:
   chirpstack-postgresql-data:
   chirpstack-redis-data:
+  telemetry-postgresql-data:
   prometheus_data:
   grafana_data:
