@@ -345,6 +345,38 @@ services:
       - pruebatcp1
     profiles: ["ingest"]
 
+  starlark-actions:
+    build:
+      context: ./starlark-actions
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - MQTT_BROKER=tcp://mosquitto:1883
+      - SENSOR_SUB_TOPIC=sensors/+/telemetry
+      - CHIRPSTACK_DEVICE_SUB_TOPIC=application/+/device/+/event/+
+      - CHIRPSTACK_GW_SUB_TOPIC=+/gateway/+/event/+
+      - STARLARK_SCRIPT=/starlark/actions.star
+      - TELEMETRY_POSTGRES_DSN=postgresql://telemetry:telemetry@telemetry-postgresql/telemetry?sslmode=disable
+      # URGENTE: CONFIGURAR CLICKHOUSE_DSN A TU INSTANCIA EXTERNA
+      - CLICKHOUSE_DSN=clickhouse://user:pass@host:8443/default
+      - CLICKHOUSE_DATABASE=default
+      - CLICKHOUSE_TLS=true
+    volumes:
+      - ./starlark:/starlark:ro
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+      telemetry-postgresql:
+        condition: service_started
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - pruebatcp1
+    profiles: ["actions"]
+
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:v0.49.1
     restart: unless-stopped
