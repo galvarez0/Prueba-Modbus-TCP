@@ -6,12 +6,22 @@
 #   pg_insert_sensor_telemetry(sensor_id=..., metric=..., value=..., tags=..., raw=...)
 #   ch_insert_raw_event(source=..., topic=..., payload=...)
 #
+# Event contract:
+#   event = {
+#     "ts": "...",
+#     "kind": "sensor" | "chirpstack_device" | "chirpstack_gateway" | "unknown",
+#     "topic": "...",
+#     "payload": "...",
+#     "json": {...}      # when JSON parse succeeds
+#     "gateway": {...}   # when gateway protobuf decode succeeds
+#   }
+#
 def on_event(event):
     kind = event.get("kind", "unknown")
     topic = event.get("topic", "")
     payload = event.get("payload", "")
 
-    # Always store a raw copy in ClickHouse (if configured)
+    # Always store raw (ClickHouse optional)
     ch_insert_raw_event(source=kind, topic=topic, payload=payload)
 
     if kind == "sensor":
@@ -20,14 +30,26 @@ def on_event(event):
         value = j.get("value", 0.0)
         sensor_id = j.get("sensor_id", "")
 
-        # Example: alert on high temp
+        # Optional: also store to Postgres via builtin (no-op if PG not configured)
+        pg_insert_sensor_telemetry(
+            sensor_id=sensor_id,
+            metric=metric,
+            value=value,
+            tags='{"via":"starlark"}',
+            raw=str(j),
+        )
+
         if metric == "temperature_c" and value >= 80:
-            mqtt_publish(topic="alerts/temperature", payload='{"sensor_id":"%s","value":%s}' % (sensor_id, value))
+            mqtt_publish(topic="alerts/temperature",
+                         payload='{"sensor_id":"%s","value":%s}' % (sensor_id, value))
 
     if kind == "chirpstack_device":
-        # Example: forward device events to a normalized topic
         mqtt_publish(topic="normalized/chirpstack_device", payload=payload)
 
-    # For gateway events (protobuf), payload is raw bytes as string (may contain non-utf8),
-    # but the decoder tries to put decoded json in event["gateway"].
+    if kind == "chirpstack_gateway":
+        gw = event.get("gateway", {})
+        mqtt_publish(topic="normalized/chirpstack_gateway",
+                     payload='{"region":"%s","gateway_id":"%s","event_type":"%s"}' % (
+                         gw.get("region",""), gw.get("gateway_id",""), gw.get("event_type","")
+                     ))
     return None
