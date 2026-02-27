@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS starlark_scripts (
   sensor_id   text PRIMARY KEY,
   enabled     boolean NOT NULL DEFAULT true,
-  script      text NOT NULL,
+  script      text NOT NULL CHECK (length(trim(script)) > 0),
   updated_at  timestamptz NOT NULL DEFAULT now()
 );
 
@@ -53,3 +53,20 @@ def on_event(event):
 $$
 )
 ON CONFLICT (sensor_id) DO NOTHING;
+
+CREATE INDEX IF NOT EXISTS idx_starlark_scripts_updated_at
+  ON starlark_scripts (updated_at DESC);
+
+CREATE OR REPLACE FUNCTION set_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_starlark_scripts_updated_at ON starlark_scripts;
+
+CREATE TRIGGER trg_starlark_scripts_updated_at
+BEFORE UPDATE ON starlark_scripts
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
