@@ -26,6 +26,14 @@ import (
 	csd "github.com/galvarez0/Prueba-Modbus-TCP/internal/chirpstackdecode"
 )
 
+/*
+DB-backed Starlark routing (sensor scripts)
+- For sensor events, pick script by sensor_id from Postgres table starlark_scripts.
+- Fallback to sensor_id='default' if not found / disabled.
+- Cache compiled programs with TTL (SCRIPT_CACHE_TTL).
+- If TELEMETRY_POSTGRES_DSN is not provided, falls back to file-based STARLARK_SCRIPT.
+*/
+
 type Env struct {
 	MQTTBroker string
 
@@ -33,16 +41,22 @@ type Env struct {
 	ChirpDeviceTopic string
 	GatewayTopic     string
 
+	// Fallback file script
 	ScriptPath string
 
+	// Optional sinks
 	PostgresDSN   string
 	ClickhouseDSN string
 	ClickhouseDB  string
 	ClickhouseTLS bool
 
+	// Behavior
 	MaxPayloadBytes int
 	ExecTimeout     time.Duration
 	ErrorTopic      string
+
+	// DB scripts
+	ScriptCacheTTL time.Duration
 }
 
 func getenv(key, def string) string {
@@ -70,10 +84,13 @@ func main() {
 		MaxPayloadBytes: mustInt(getenv("MAX_PAYLOAD_BYTES", "1048576"), 1048576),
 		ExecTimeout:     mustDuration(getenv("EXEC_TIMEOUT", "250ms"), 250*time.Millisecond),
 		ErrorTopic:      getenv("ACTIONS_ERROR_TOPIC", "actions/errors"),
+
+		ScriptCacheTTL: mustDuration(getenv("SCRIPT_CACHE_TTL", "10s"), 10*time.Second),
 	}
 
 	ctx := context.Background()
 
+	// Optional Postgres (also used as the script store)
 	var pgpool *pgxpool.Pool
 	if env.PostgresDSN != "" {
 		p, err := pgxpool.New(ctx, env.PostgresDSN)
@@ -85,6 +102,7 @@ func main() {
 		defer pgpool.Close()
 	}
 
+	// Optional ClickHouse sink
 	var chConn clickhouse.Conn
 	if env.ClickhouseDSN != "" {
 		opts, err := clickhouse.ParseDSN(env.ClickhouseDSN)
@@ -101,6 +119,8 @@ func main() {
 		}
 		chConn = clickhouse.Open(opts)
 		_ = chConn.Ping(ctx)
+
+		// Best-effort table for raw events
 		_ = chConn.Exec(ctx, fmt.Sprintf(`
 CREATE TABLE IF NOT EXISTS %s.raw_events (
   ts DateTime64(3, 'UTC'),
@@ -112,6 +132,7 @@ ENGINE = MergeTree
 ORDER BY (source, ts)`, env.ClickhouseDB))
 	}
 
+	// MQTT
 	mopts := mqtt.NewClientOptions().
 		AddBroker(env.MQTTBroker).
 		SetClientID("starlark-actions").
@@ -131,8 +152,7 @@ ORDER BY (source, ts)`, env.ClickhouseDB))
 	}
 	fmt.Println("[actions] MQTT connected:", env.MQTTBroker)
 
-	runner := NewScriptRunner(env.ScriptPath)
-
+	// Builtins exposed to Starlark
 	builtins := starlark.StringDict{
 		"mqtt_publish": starlark.NewBuiltin("mqtt_publish", func(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 			var topic, payload string
@@ -200,6 +220,20 @@ ORDER BY (source, ts)`, env.ClickhouseDB))
 		}),
 	}
 
+	// Script engines:
+	// 1) If Postgres is configured, use DB scripts per sensor_id with cache.
+	// 2) Else, use file-based runner (existing behavior).
+	var dbEngine *DBScriptEngine
+	var fileRunner *FileScriptRunner
+
+	if pgpool != nil {
+		dbEngine = NewDBScriptEngine(pgpool, env.ScriptCacheTTL, builtins)
+		fmt.Println("[actions] DB script engine enabled (telemetry postgres)")
+	} else {
+		fileRunner = NewFileScriptRunner(env.ScriptPath, builtins)
+		fmt.Println("[actions] DB script engine disabled; using file:", env.ScriptPath)
+	}
+
 	handler := func(_ mqtt.Client, msg mqtt.Message) {
 		topic := msg.Topic()
 		payload := msg.Payload()
@@ -210,14 +244,28 @@ ORDER BY (source, ts)`, env.ClickhouseDB))
 
 		event := buildEvent(topic, payload, env.SensorTopic, env.ChirpDeviceTopic, env.GatewayTopic)
 
-		prog, err := runner.LoadIfChanged(builtins)
+		// Choose program
+		var prog *ScriptProgram
+		var err error
+
+		if dbEngine != nil && event.Kind == "sensor" && event.SensorID != "" {
+			prog, err = dbEngine.ProgramForSensor(ctx, event.SensorID)
+		} else if fileRunner != nil {
+			prog, err = fileRunner.LoadIfChanged()
+		} else if dbEngine != nil {
+			// Non-sensor events: use default
+			prog, err = dbEngine.ProgramForSensor(ctx, "default")
+		} else {
+			err = fmt.Errorf("no script engine configured")
+		}
+
 		if err != nil {
 			publishError(client, env.ErrorTopic, topic, "starlark load error: "+err.Error())
 			return
 		}
 
 		done := make(chan error, 1)
-		go func() { done <- prog.CallOnEvent(event) }()
+		go func() { done <- prog.CallOnEvent(event.ToMap()) }()
 
 		select {
 		case err := <-done:
@@ -240,40 +288,72 @@ ORDER BY (source, ts)`, env.ClickhouseDB))
 	client.Disconnect(250)
 }
 
-func buildEvent(topic string, payload []byte, sensorTopic, devTopic, gwTopic string) map[string]any {
-	now := time.Now().UTC()
-	ev := map[string]any{
-		"ts":      now.Format(time.RFC3339Nano),
-		"topic":   topic,
-		"kind":    "unknown",
-		"payload": string(payload),
+/* ===================== Event model ===================== */
+
+type Event struct {
+	TS       string
+	Kind     string
+	Topic    string
+	Payload  string
+	JSON     map[string]any
+	SensorID string
+
+	// gateway decode
+	Gateway map[string]any
+}
+
+func (e Event) ToMap() map[string]any {
+	out := map[string]any{
+		"ts":      e.TS,
+		"kind":    e.Kind,
+		"topic":   e.Topic,
+		"payload": e.Payload,
+	}
+	if e.JSON != nil {
+		out["json"] = e.JSON
+	}
+	if e.SensorID != "" {
+		out["sensor_id"] = e.SensorID
+	}
+	if e.Gateway != nil {
+		out["gateway"] = e.Gateway
+	}
+	return out
+}
+
+func buildEvent(topic string, payload []byte, sensorTopic, devTopic, gwTopic string) Event {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	ev := Event{
+		TS:      now,
+		Topic:   topic,
+		Kind:    "unknown",
+		Payload: string(payload),
 	}
 
 	if matchTopic(topic, sensorTopic) {
-		ev["kind"] = "sensor"
+		ev.Kind = "sensor"
 		var m map[string]any
 		if err := json.Unmarshal(payload, &m); err == nil {
-			ev["json"] = m
-		} else {
-			ev["json_error"] = err.Error()
+			ev.JSON = m
+			if sid, ok := m["sensor_id"].(string); ok {
+				ev.SensorID = sid
+			}
 		}
 		return ev
 	}
 
 	if matchTopic(topic, devTopic) {
-		ev["kind"] = "chirpstack_device"
+		ev.Kind = "chirpstack_device"
 		if d, err := csd.DecodeChirpStackDeviceEventJSON(topic, payload); err == nil {
-			ev["json"] = d.Raw
-		} else {
-			ev["json_error"] = err.Error()
+			ev.JSON = d.Raw
 		}
 		return ev
 	}
 
 	if matchTopic(topic, gwTopic) {
-		ev["kind"] = "chirpstack_gateway"
+		ev.Kind = "chirpstack_gateway"
 		if g, err := csd.DecodeGatewayEventProtobuf(topic, payload); err == nil {
-			ev["gateway"] = map[string]any{
+			ev.Gateway = map[string]any{
 				"region":     g.RegionHint,
 				"gateway_id": g.GatewayID,
 				"event_type": g.EventType,
@@ -281,8 +361,10 @@ func buildEvent(topic string, payload []byte, sensorTopic, devTopic, gwTopic str
 				"raw_b64":    g.RawBase64,
 			}
 		} else {
-			ev["gateway_decode_error"] = err.Error()
-			ev["payload_b64"] = base64.StdEncoding.EncodeToString(payload)
+			ev.Gateway = map[string]any{
+				"decode_error": err.Error(),
+				"payload_b64":  base64.StdEncoding.EncodeToString(payload),
+			}
 		}
 		return ev
 	}
@@ -290,15 +372,7 @@ func buildEvent(topic string, payload []byte, sensorTopic, devTopic, gwTopic str
 	return ev
 }
 
-func publishError(client mqtt.Client, topic, srcTopic, message string) {
-	payload := map[string]any{
-		"ts":           time.Now().UTC().Format(time.RFC3339Nano),
-		"source_topic": srcTopic,
-		"error":        message,
-	}
-	b, _ := json.Marshal(payload)
-	client.Publish(topic, 0, false, b)
-}
+/* ===================== Script program ===================== */
 
 type ScriptProgram struct {
 	globals starlark.StringDict
@@ -320,17 +394,142 @@ func (p *ScriptProgram) CallOnEvent(event map[string]any) error {
 	return err
 }
 
-type ScriptRunner struct {
+func compileProgram(filename string, src []byte, builtins starlark.StringDict) (*ScriptProgram, error) {
+	thread := &starlark.Thread{Name: "load"}
+	globals, err := starlark.ExecFile(thread, filename, src, builtins)
+	if err != nil {
+		return nil, err
+	}
+	return &ScriptProgram{globals: globals}, nil
+}
+
+/* ===================== DB script engine ===================== */
+
+type cachedDBScript struct {
+	sensorID  string
+	script    string
+	updatedAt time.Time
+
+	fetchedAt time.Time
+	prog      *ScriptProgram
+}
+
+type DBScriptEngine struct {
+	pg       *pgxpool.Pool
+	ttl      time.Duration
+	builtins starlark.StringDict
+
+	mu    sync.Mutex
+	cache map[string]*cachedDBScript
+}
+
+func NewDBScriptEngine(pg *pgxpool.Pool, ttl time.Duration, builtins starlark.StringDict) *DBScriptEngine {
+	return &DBScriptEngine{
+		pg:       pg,
+		ttl:      ttl,
+		builtins: builtins,
+		cache:    make(map[string]*cachedDBScript),
+	}
+}
+
+func (e *DBScriptEngine) ProgramForSensor(ctx context.Context, sensorID string) (*ScriptProgram, error) {
+	if strings.TrimSpace(sensorID) == "" {
+		sensorID = "default"
+	}
+
+	// Check cache
+	e.mu.Lock()
+	c := e.cache[sensorID]
+	if c != nil && time.Since(c.fetchedAt) < e.ttl && c.prog != nil {
+		p := c.prog
+		e.mu.Unlock()
+		return p, nil
+	}
+	e.mu.Unlock()
+
+	// Fetch from DB (sensor-specific, fallback to default)
+	script, updatedAt, err := e.fetchScript(ctx, sensorID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Compile
+	filename := fmt.Sprintf("db:%s", sensorID)
+	prog, err := compileProgram(filename, []byte(script), e.builtins)
+	if err != nil {
+		return nil, err
+	}
+
+	// Store cache
+	e.mu.Lock()
+	e.cache[sensorID] = &cachedDBScript{
+		sensorID:  sensorID,
+		script:    script,
+		updatedAt: updatedAt,
+		fetchedAt: time.Now(),
+		prog:      prog,
+	}
+	e.mu.Unlock()
+
+	return prog, nil
+}
+
+func (e *DBScriptEngine) fetchScript(ctx context.Context, sensorID string) (string, time.Time, error) {
+	type row struct {
+		script    string
+		updatedAt time.Time
+	}
+
+	// Sensor-specific first
+	var r row
+	err := e.pg.QueryRow(ctx,
+		`SELECT script, updated_at
+         FROM starlark_scripts
+         WHERE sensor_id=$1 AND enabled=true
+         ORDER BY updated_at DESC
+         LIMIT 1`,
+		sensorID,
+	).Scan(&r.script, &r.updatedAt)
+
+	if err == nil && strings.TrimSpace(r.script) != "" {
+		return r.script, r.updatedAt, nil
+	}
+
+	// Fallback default
+	err = e.pg.QueryRow(ctx,
+		`SELECT script, updated_at
+         FROM starlark_scripts
+         WHERE sensor_id='default' AND enabled=true
+         ORDER BY updated_at DESC
+         LIMIT 1`,
+	).Scan(&r.script, &r.updatedAt)
+
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("no starlark script found for sensor_id=%q and no default script", sensorID)
+	}
+	if strings.TrimSpace(r.script) == "" {
+		return "", time.Time{}, fmt.Errorf("default starlark script is empty")
+	}
+	return r.script, r.updatedAt, nil
+}
+
+/* ===================== File fallback runner ===================== */
+
+type FileScriptRunner struct {
 	path     string
+	builtins starlark.StringDict
+
 	lastMod  time.Time
 	lastSize int64
 	prog     *ScriptProgram
 	mu       sync.Mutex
 }
 
-func NewScriptRunner(path string) *ScriptRunner { return &ScriptRunner{path: path} }
+func NewFileScriptRunner(path string, builtins starlark.StringDict) *FileScriptRunner {
+	return &FileScriptRunner{path: path, builtins: builtins}
+}
 
-func (r *ScriptRunner) LoadIfChanged(builtins starlark.StringDict) (*ScriptProgram, error) {
+func (r *FileScriptRunner) LoadIfChanged() (*ScriptProgram, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -354,18 +553,29 @@ func (r *ScriptRunner) LoadIfChanged(builtins starlark.StringDict) (*ScriptProgr
 		}
 	}
 
-	thread := &starlark.Thread{Name: "load"}
-	globals, err := starlark.ExecFile(thread, abs, src, builtins)
+	prog, err := compileProgram(abs, src, r.builtins)
 	if err != nil {
 		return nil, err
 	}
 
-	r.prog = &ScriptProgram{globals: globals}
+	r.prog = prog
 	r.lastMod = st.ModTime()
 	r.lastSize = st.Size()
 
-	fmt.Println("[actions] reloaded starlark script:", abs)
+	fmt.Println("[actions] reloaded file starlark script:", abs)
 	return r.prog, nil
+}
+
+/* ===================== Helpers ===================== */
+
+func publishError(client mqtt.Client, topic, srcTopic, message string) {
+	payload := map[string]any{
+		"ts":           time.Now().UTC().Format(time.RFC3339Nano),
+		"source_topic": srcTopic,
+		"error":        message,
+	}
+	b, _ := json.Marshal(payload)
+	client.Publish(topic, 0, false, b)
 }
 
 func toStarlark(v any) starlark.Value {
