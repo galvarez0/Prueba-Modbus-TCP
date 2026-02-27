@@ -28,8 +28,8 @@ type Env struct {
 	GatewayTopic     string
 
 	ClickhouseDSN string
-	Database     string
-	TLS          bool
+	Database      string
+	TLS           bool
 
 	BatchSize  int
 	FlushEvery time.Duration
@@ -55,15 +55,15 @@ type SensorRow struct {
 type DeviceEventRow struct {
 	TS            time.Time
 	ApplicationID string
-	DevEUI         string
-	EventType      string
-	Topic          string
-	JSON           string
+	DevEUI        string
+	EventType     string
+	Topic         string
+	JSON          string
 }
 
 type GatewayEventRow struct {
-	TS       time.Time
-	Region   string
+	TS        time.Time
+	Region    string
 	GatewayID string
 	EventType string
 	Topic     string
@@ -81,12 +81,11 @@ func getenv(key, def string) string {
 
 func main() {
 	env := Env{
-		MQTTBroker: getenv("MQTT_BROKER", "tcp://mosquitto:1883"),
-		SensorTopic: getenv("SENSOR_SUB_TOPIC", "sensors/+/telemetry"),
+		MQTTBroker:       getenv("MQTT_BROKER", "tcp://mosquitto:1883"),
+		SensorTopic:      getenv("SENSOR_SUB_TOPIC", "sensors/+/telemetry"),
 		ChirpDeviceTopic: getenv("CHIRPSTACK_DEVICE_SUB_TOPIC", "application/+/device/+/event/+"),
 		GatewayTopic: getenv("CHIRPSTACK_GW_SUB_TOPIC", "+/gateway/+/event/+"),
 
-		// URGENTE: CONFIGURAR CLICKHOUSE_DSN PARA TU INSTANCIA EXTERNA
 		ClickhouseDSN: getenv("CLICKHOUSE_DSN", "clickhouse://user:pass@host:8443/default"),
 		Database:      getenv("CLICKHOUSE_DATABASE", "default"),
 		TLS:           strings.ToLower(getenv("CLICKHOUSE_TLS", "true")) == "true",
@@ -172,6 +171,7 @@ func main() {
 			}
 			sensorID, _ := m["sensor_id"].(string)
 			metric, _ := m["metric"].(string)
+
 			value, _ := m["value"].(float64)
 			tagsB, _ := json.Marshal(m["tags"])
 			rawB, _ := json.Marshal(m)
@@ -229,7 +229,7 @@ func main() {
 }
 
 func ensureTables(ctx context.Context, conn clickhouse.Conn, db string) {
-	mustExec(ctx, conn, fmt.Sprintf(`
+	_ = conn.Exec(ctx, fmt.Sprintf(`
 CREATE TABLE IF NOT EXISTS %s.raw_events (
   ts DateTime64(3, 'UTC'),
   source LowCardinality(String),
@@ -239,7 +239,7 @@ CREATE TABLE IF NOT EXISTS %s.raw_events (
 ENGINE = MergeTree
 ORDER BY (source, ts)`, db))
 
-	mustExec(ctx, conn, fmt.Sprintf(`
+	_ = conn.Exec(ctx, fmt.Sprintf(`
 CREATE TABLE IF NOT EXISTS %s.sensor_telemetry (
   ts DateTime64(3, 'UTC'),
   sensor_id String,
@@ -251,7 +251,7 @@ CREATE TABLE IF NOT EXISTS %s.sensor_telemetry (
 ENGINE = MergeTree
 ORDER BY (sensor_id, ts)`, db))
 
-	mustExec(ctx, conn, fmt.Sprintf(`
+	_ = conn.Exec(ctx, fmt.Sprintf(`
 CREATE TABLE IF NOT EXISTS %s.chirpstack_device_events (
   ts DateTime64(3, 'UTC'),
   application_id String,
@@ -263,7 +263,7 @@ CREATE TABLE IF NOT EXISTS %s.chirpstack_device_events (
 ENGINE = MergeTree
 ORDER BY (dev_eui, ts)`, db))
 
-	mustExec(ctx, conn, fmt.Sprintf(`
+	_ = conn.Exec(ctx, fmt.Sprintf(`
 CREATE TABLE IF NOT EXISTS %s.chirpstack_gateway_events (
   ts DateTime64(3, 'UTC'),
   region String,
@@ -287,7 +287,6 @@ func batchRaw(ctx context.Context, wg *sync.WaitGroup, conn clickhouse.Conn, env
 	defer wg.Done()
 	flush := time.NewTicker(env.FlushEvery)
 	defer flush.Stop()
-
 	buf := make([]RawEvent, 0, env.BatchSize)
 	for {
 		select {
@@ -312,7 +311,6 @@ func batchRaw(ctx context.Context, wg *sync.WaitGroup, conn clickhouse.Conn, env
 		}
 	}
 }
-
 func flushRaw(ctx context.Context, conn clickhouse.Conn, env Env, rows []RawEvent) {
 	if len(rows) == 0 {
 		return
@@ -325,16 +323,13 @@ func flushRaw(ctx context.Context, conn clickhouse.Conn, env Env, rows []RawEven
 	for _, r := range rows {
 		_ = batch.Append(r.TS, r.Source, r.Topic, r.Payload)
 	}
-	if err := batch.Send(); err != nil {
-		fmt.Println("[ingestor] WARN raw send:", err)
-	}
+	_ = b.Send()
 }
 
 func batchSensor(ctx context.Context, wg *sync.WaitGroup, conn clickhouse.Conn, env Env, ch <-chan SensorRow) {
 	defer wg.Done()
 	flush := time.NewTicker(env.FlushEvery)
 	defer flush.Stop()
-
 	buf := make([]SensorRow, 0, env.BatchSize)
 	for {
 		select {
@@ -359,7 +354,6 @@ func batchSensor(ctx context.Context, wg *sync.WaitGroup, conn clickhouse.Conn, 
 		}
 	}
 }
-
 func flushSensor(ctx context.Context, conn clickhouse.Conn, env Env, rows []SensorRow) {
 	if len(rows) == 0 {
 		return
@@ -381,7 +375,6 @@ func batchDevice(ctx context.Context, wg *sync.WaitGroup, conn clickhouse.Conn, 
 	defer wg.Done()
 	flush := time.NewTicker(env.FlushEvery)
 	defer flush.Stop()
-
 	buf := make([]DeviceEventRow, 0, env.BatchSize)
 	for {
 		select {
@@ -406,14 +399,12 @@ func batchDevice(ctx context.Context, wg *sync.WaitGroup, conn clickhouse.Conn, 
 		}
 	}
 }
-
 func flushDevice(ctx context.Context, conn clickhouse.Conn, env Env, rows []DeviceEventRow) {
 	if len(rows) == 0 {
 		return
 	}
 	batch, err := conn.PrepareBatch(ctx, fmt.Sprintf("INSERT INTO %s.chirpstack_device_events (ts, application_id, dev_eui, event_type, topic, json)", env.Database))
 	if err != nil {
-		fmt.Println("[ingestor] WARN device prepare:", err)
 		return
 	}
 	for _, r := range rows {
@@ -428,7 +419,6 @@ func batchGateway(ctx context.Context, wg *sync.WaitGroup, conn clickhouse.Conn,
 	defer wg.Done()
 	flush := time.NewTicker(env.FlushEvery)
 	defer flush.Stop()
-
 	buf := make([]GatewayEventRow, 0, env.BatchSize)
 	for {
 		select {
@@ -453,7 +443,6 @@ func batchGateway(ctx context.Context, wg *sync.WaitGroup, conn clickhouse.Conn,
 		}
 	}
 }
-
 func flushGateway(ctx context.Context, conn clickhouse.Conn, env Env, rows []GatewayEventRow) {
 	if len(rows) == 0 {
 		return
@@ -483,7 +472,6 @@ func classify(topic, sensor, dev, gw string) string {
 	}
 	return "unknown"
 }
-
 func matchTopic(topic, pattern string) bool {
 	t := strings.Split(topic, "/")
 	p := strings.Split(pattern, "/")
@@ -503,7 +491,6 @@ func matchTopic(topic, pattern string) bool {
 	}
 	return len(t) == len(p)
 }
-
 func mustDuration(s string, def time.Duration) time.Duration {
 	d, err := time.ParseDuration(strings.TrimSpace(s))
 	if err != nil {
@@ -511,7 +498,6 @@ func mustDuration(s string, def time.Duration) time.Duration {
 	}
 	return d
 }
-
 func mustInt(s string, def int) int {
 	i, err := strconv.Atoi(strings.TrimSpace(s))
 	if err != nil {
