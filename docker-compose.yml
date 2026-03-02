@@ -418,6 +418,46 @@ services:
       - pruebatcp1
     profiles: ["obs"]
 
+  # Admin API (CRUD for telemetry.starlark_scripts)
+  admin-api:
+    build:
+      context: ./admin-api
+      dockerfile: Dockerfile
+    image: galvarez0/pruebatcp1:admin-api
+    environment:
+      - ADMIN_API_ADDR=:8095
+      - TELEMETRY_POSTGRES_DSN=postgres://telemetry:telemetry@telemetry-postgresql:5432/telemetry?sslmode=disable
+      - CORS_ALLOW_ORIGIN=*
+    depends_on:
+      telemetry-postgresql:
+        condition: service_started
+    ports:
+      - "127.0.0.1:8095:8095"
+    restart: unless-stopped
+    networks:
+      - pruebatcp1
+    profiles: ["admin"]
+
+  # Admin UI (React) - serves static build via nginx.
+  admin-ui:
+    build:
+      context: ./admin-ui
+      dockerfile: Dockerfile
+    image: galvarez0/pruebatcp1:admin-ui
+    environment:
+      # If you reverse-proxy with Caddy, you can keep same-origin and set VITE_API_BASE accordingly.
+      # For direct local usage, UI will call http://localhost:8095 by default.
+      - NGINX_ENTRYPOINT_QUIET_LOGS=1
+    depends_on:
+      admin-api:
+        condition: service_started
+    ports:
+      - "127.0.0.1:8096:80"
+    restart: unless-stopped
+    networks:
+      - pruebatcp1
+    profiles: ["admin"]
+
 networks:
   pruebatcp1:
     driver: bridge
