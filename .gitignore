@@ -2,3 +2,4 @@ client/client
 client/modbus-client
 server/server
 server/modbus-server
+admin-ui/node_modules
