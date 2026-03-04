@@ -9,7 +9,7 @@ export type Node = {
   updated_at: string
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8095'
+const API_BASE = import.meta.env.VITE_API_BASE || ''
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {

@@ -205,8 +205,9 @@ func (s *apiServer) createNode(w http.ResponseWriter, r *http.Request) {
 
   _, err := s.db.Exec(ctx,
     `INSERT INTO starlark_scripts(sensor_id, enabled, script, type, name, description, tags)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)`
-    , body.SensorID, body.Enabled, body.Script, body.Type, body.Name, body.Description, body.Tags)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+     body.SensorID, body.Enabled, body.Script, body.Type, body.Name, body.Description, body.Tags,
+    )
   if err != nil {
     http.Error(w, err.Error(), http.StatusConflict)
     return
