@@ -1,26 +1,53 @@
 dm-server-test.datamecanic.com {
-	handle / {
-		reverse_proxy 127.0.0.1:8080
+	# - UI:        https://dm-server-test.datamecanic.com/admin
+	# - Admin API: https://dm-server-test.datamecanic.com/admin-api
+	#
+	# Nota: define las variables de entorno ADMIN_USER y ADMIN_HASH (hash bcrypt).
+	# Ejemplo para generar hash:
+	#   caddy hash-password --plaintext 'PASSWORD'
+	handle_path /admin-api/* {
+		basicauth {
+			{env.ADMIN_USER} {env.ADMIN_HASH}
+		}
+		reverse_proxy 127.0.0.1:8095
 	}
+
+	handle_path /admin/* {
+		basicauth {
+			{env.ADMIN_USER} {env.ADMIN_HASH}
+		}
+		reverse_proxy 127.0.0.1:8096
+	}
+
 	# Acceso: https://dm-server-test.datamecanic.com/chirpstack
 	handle_path /chirpstack/* {
 		reverse_proxy 127.0.0.1:8082
 	}
+
+	# API existente del stack (NO confundir con /admin-api)
 	# Acceso: https://dm-server-test.datamecanic.com/api
 	handle_path /api/* {
 		reverse_proxy 127.0.0.1:8090
 	}
+
 	# Observabilidad
 	# Grafana: host 127.0.0.1:3000
 	handle_path /grafana/* {
 		reverse_proxy 127.0.0.1:3000
 	}
+
 	# Prometheus: host 127.0.0.1:9091
 	handle_path /prometheus/* {
 		reverse_proxy 127.0.0.1:9091
 	}
+
 	# cAdvisor: host 127.0.0.1:8089
 	handle_path /cadvisor/* {
 		reverse_proxy 127.0.0.1:8089
+	}
+
+	# Root de la app principal
+	handle / {
+		reverse_proxy 127.0.0.1:8080
 	}
 }
