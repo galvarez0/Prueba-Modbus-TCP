@@ -88,7 +88,7 @@ export default function NodesPage() {
   const [pageSize, setPageSize] = useState(20)
   const [page, setPage] = useState(1)
 
-  const [autoRefreshSec, setAutoRefreshSec] = useState<number>(0) // 0=off
+  const [autoRefreshSec, setAutoRefreshSec] = useState<number>(0)
   const autoRefreshTimerRef = useRef<number | null>(null)
 
   const [mode, setMode] = useState<Mode>('list')
@@ -102,7 +102,6 @@ export default function NodesPage() {
     try {
       const res = await listNodes({ q: q.trim() || undefined, enabled: enabledFilter })
       setItems(res.items)
-      // reconciliar selección si alguien borró algo
       setSelected((prev) => {
         const live = new Set(res.items.map((x) => x.sensor_id))
         const next = new Set<string>()
@@ -116,13 +115,11 @@ export default function NodesPage() {
     }
   }
 
-  // initial load
   useEffect(() => {
     refresh()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // debounce search/filter
   useEffect(() => {
     const t = window.setTimeout(() => {
       setPage(1)
@@ -132,7 +129,6 @@ export default function NodesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q, enabledFilter])
 
-  // auto refresh
   useEffect(() => {
     if (autoRefreshTimerRef.current) {
       window.clearInterval(autoRefreshTimerRef.current)
@@ -162,9 +158,8 @@ export default function NodesPage() {
       if (sortKey === 'enabled') {
         return ((a.enabled === b.enabled ? 0 : a.enabled ? 1 : -1) as number) * dir
       }
-      // string keys
-      const av = String((a as any)[sortKey] ?? '')
-      const bv = String((b as any)[sortKey] ?? '')
+      const av = String((a as Record<string, unknown>)[sortKey] ?? '')
+      const bv = String((b as Record<string, unknown>)[sortKey] ?? '')
       return av.localeCompare(bv) * dir
     })
     return arr
@@ -179,8 +174,8 @@ export default function NodesPage() {
   }, [sorted, safePage, pageSize])
 
   const selectedCount = selected.size
-  const enabledCount = items.filter((x) => x.enabled).length
-  const disabledCount = items.length - enabledCount
+  const activeCount = items.filter((x) => x.enabled).length
+  const inactiveCount = items.length - activeCount
 
   const header = useMemo(() => {
     return (
@@ -189,7 +184,7 @@ export default function NodesPage() {
           <div className="title">Starlark Nodes</div>
           <div className="sub">Cada fila = un nodo ejecutable (telemetry.starlark_scripts)</div>
           <div className="sub">
-            Total: <b>{items.length}</b> · Enabled: <b>{enabledCount}</b> · Disabled: <b>{disabledCount}</b>
+            Total: <b>{items.length}</b> · Activos: <b>{activeCount}</b> · Inactivos: <b>{inactiveCount}</b>
           </div>
         </div>
         <div className="actions">
@@ -218,7 +213,7 @@ export default function NodesPage() {
         </div>
       </div>
     )
-  }, [loading, items, enabledCount, disabledCount])
+  }, [items, activeCount, inactiveCount, loading])
 
   async function bulkSetEnabled(next: boolean) {
     const ids = [...selected]
@@ -227,10 +222,9 @@ export default function NodesPage() {
     setErr(null)
     try {
       for (const id of ids) {
-        // no bloquear default aquí; sí permitimos enable/disable default si quisieras (si no, lo bloqueamos también)
         await patchNode(id, { enabled: next })
       }
-      setToast(`Actualizado: ${ids.length} nodo(s)`)
+      setToast(`Actualizados: ${ids.length} nodo(s)`)
       await refresh()
     } catch (e: unknown) {
       setErr(errMsg(e))
@@ -248,13 +242,13 @@ export default function NodesPage() {
       await createNode({
         sensor_id: newId,
         type: n.type || 'custom',
-        name: (n.name ? `${n.name} (copy)` : null) as any,
+        name: n.name ? `${n.name} (copy)` : null,
         description: n.description ?? null,
         tags: n.tags ?? [],
         enabled: false,
         script: n.script,
       })
-      setToast(`Duplicado: ${n.sensor_id} → ${newId} (disabled)`)
+      setToast(`Duplicado: ${n.sensor_id} → ${newId} (inactivo)`)
       await refresh()
     } catch (e: unknown) {
       setErr(errMsg(e))
@@ -272,7 +266,7 @@ export default function NodesPage() {
       <div className="toolbar" style={{ gap: 10, flexWrap: 'wrap' }}>
         <input
           className="input"
-          placeholder="Buscar por sensor_id, name, type…"
+          placeholder="Buscar por sensor_id, name, Tipo…"
           value={q}
           onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQ(e.target.value)}
           style={{ minWidth: 260 }}
@@ -282,11 +276,11 @@ export default function NodesPage() {
           className="select"
           value={enabledFilter}
           onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setEnabledFilter(e.target.value as '' | 'true' | 'false')}
-          title="Filtrar por enabled"
+          title="Filtrar por estado"
         >
           <option value="">Todos</option>
-          <option value="true">Enabled</option>
-          <option value="false">Disabled</option>
+          <option value="true">Activos</option>
+          <option value="false">Inactivos</option>
         </select>
 
         <select
@@ -299,14 +293,14 @@ export default function NodesPage() {
           }}
           title="Orden"
         >
-          <option value="updated_at:desc">updated_at ↓</option>
-          <option value="updated_at:asc">updated_at ↑</option>
+          <option value="updated_at:desc">Momento de actualización ↓</option>
+          <option value="updated_at:asc">Momento de actualización ↑</option>
           <option value="sensor_id:asc">sensor_id A→Z</option>
           <option value="sensor_id:desc">sensor_id Z→A</option>
-          <option value="type:asc">type A→Z</option>
-          <option value="type:desc">type Z→A</option>
-          <option value="enabled:desc">enabled (true primero)</option>
-          <option value="enabled:asc">enabled (false primero)</option>
+          <option value="type:asc">Tipo A→Z</option>
+          <option value="type:desc">Tipo Z→A</option>
+          <option value="enabled:desc">Activos primero</option>
+          <option value="enabled:asc">Inactivos primero</option>
         </select>
 
         <select
@@ -318,23 +312,23 @@ export default function NodesPage() {
           }}
           title="Tamaño de página"
         >
-          <option value="10">10/pg</option>
-          <option value="20">20/pg</option>
-          <option value="50">50/pg</option>
-          <option value="100">100/pg</option>
+          <option value="10">10 por página</option>
+          <option value="20">20 por página</option>
+          <option value="50">50 por página</option>
+          <option value="100">100 por página</option>
         </select>
 
         <select
           className="select"
           value={String(autoRefreshSec)}
           onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setAutoRefreshSec(Number(e.target.value))}
-          title="Auto refresh"
+          title="Actualización automática"
         >
-          <option value="0">Auto-refresh: Off</option>
-          <option value="2">Auto-refresh: 2s</option>
-          <option value="5">Auto-refresh: 5s</option>
-          <option value="10">Auto-refresh: 10s</option>
-          <option value="30">Auto-refresh: 30s</option>
+          <option value="0">Actualización automática: Desactivada</option>
+          <option value="2">Actualización automática: 2s</option>
+          <option value="5">Actualización automática: 5s</option>
+          <option value="10">Actualización automática: 10s</option>
+          <option value="30">Actualización automática: 30s</option>
         </select>
 
         <div className="meta" style={{ marginLeft: 'auto' }}>
@@ -365,12 +359,12 @@ export default function NodesPage() {
           <div>
             Seleccionados: <b>{selectedCount}</b>
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button className="btn secondary" onClick={() => bulkSetEnabled(true)} disabled={loading}>
-              Enable seleccionados
+              Activar seleccionados
             </button>
             <button className="btn secondary" onClick={() => bulkSetEnabled(false)} disabled={loading}>
-              Disable seleccionados
+              Desactivar seleccionados
             </button>
             <button
               className="btn secondary"
@@ -405,9 +399,9 @@ export default function NodesPage() {
                 />
               </th>
               <th>sensor_id</th>
-              <th>type</th>
-              <th>enabled</th>
-              <th>updated_at</th>
+              <th>Tipo</th>
+              <th>Activo</th>
+              <th>Momento de actualización</th>
               <th style={{ width: 320 }}></th>
             </tr>
           </thead>
@@ -439,17 +433,15 @@ export default function NodesPage() {
                         const next = e.target.checked
                         setErr(null)
 
-                        // optimistic UI
                         setItems((prev) =>
                           prev.map((x) => (x.sensor_id === n.sensor_id ? { ...x, enabled: next } : x))
                         )
 
                         try {
                           await patchNode(n.sensor_id, { enabled: next })
-                          setToast(`Actualizado: ${n.sensor_id} → enabled=${next}`)
+                          setToast(`Actualizado: ${n.sensor_id} → ${next ? 'activo' : 'inactivo'}`)
                           await refresh()
                         } catch (e: unknown) {
-                          // rollback (re-fetch)
                           setErr(errMsg(e))
                           await refresh()
                         }
@@ -459,7 +451,7 @@ export default function NodesPage() {
                   </label>
                 </td>
                 <td>{fmtTs(n.updated_at)}</td>
-                <td className="rowActions" style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <td className="rowActions" style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
                   <button
                     className="btn secondary"
                     onClick={() => {
@@ -550,7 +542,6 @@ export default function NodesPage() {
         <ImportModal
           onClose={() => setMode('list')}
           onImport={async (nodes) => {
-            // Importa como createNode; si existe, fallará. (Lo hacemos explícito y seguro)
             setLoading(true)
             setErr(null)
             try {
@@ -605,9 +596,47 @@ function NodeEditor(props: {
   const [err, setErr] = useState<string | null>(null)
 
   return (
-    <div className="modalOverlay" role="dialog" aria-modal="true">
-      <div className="modal">
-        <div className="modalHeader">
+    <div
+      className="modalOverlay"
+      role="dialog"
+      aria-modal="true"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.35)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 16,
+        zIndex: 2000,
+        overflowY: 'auto',
+      }}
+    >
+      <div
+        className="modal"
+        style={{
+          width: 'min(1100px, 100%)',
+          maxHeight: 'calc(100vh - 32px)',
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+      >
+        <div
+          className="modalHeader"
+          style={{
+            position: 'sticky',
+            top: 0,
+            zIndex: 1,
+            background: 'var(--card-bg, #fff)',
+            padding: 16,
+            borderBottom: '1px solid rgba(0,0,0,0.08)',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'flex-start',
+            gap: 12,
+          }}
+        >
           <div>
             <div className="title">{isEdit ? `Editar nodo: ${props.initial?.sensor_id}` : 'Nuevo nodo'}</div>
             <div className="sub">Guarda en telemetry.starlark_scripts y actualiza updated_at para hot-reload.</div>
@@ -617,92 +646,115 @@ function NodeEditor(props: {
           </button>
         </div>
 
-        {err && (
-          <div className="error" style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-            <span>⚠ {err}</span>
-          </div>
-        )}
-
-        <div className="grid">
-          <div>
-            <label className="label">sensor_id</label>
-            <input
-              className="input mono"
-              value={sensorId}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSensorId(e.target.value)}
-              disabled={isEdit || saving}
-            />
-          </div>
-
-          <div>
-            <label className="label">type</label>
-            <input
-              className="input"
-              value={type}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setType(e.target.value)}
-              disabled={saving}
-            />
-          </div>
-
-          <div>
-            <label className="label">name</label>
-            <input
-              className="input"
-              value={name}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)}
-              disabled={saving}
-            />
-          </div>
-
-          <div>
-            <label className="label">enabled</label>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', height: 40 }}>
-              <label className="switch">
-                <input
-                  type="checkbox"
-                  checked={enabled}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEnabled(e.target.checked)}
-                  disabled={saving}
-                />
-                <span className="slider" />
-              </label>
-              <span className="sub">{enabled ? 'activo' : 'inactivo'}</span>
+        <div
+          style={{
+            overflowY: 'auto',
+            padding: 16,
+            flex: 1,
+          }}
+        >
+          {err && (
+            <div className="error" style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 16 }}>
+              <span>⚠ {err}</span>
             </div>
-          </div>
+          )}
 
-          <div style={{ gridColumn: '1 / -1' }}>
-            <label className="label">description</label>
-            <input
-              className="input"
-              value={description}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDescription(e.target.value)}
-              disabled={saving}
-            />
-          </div>
+          <div className="grid">
+            <div>
+              <label className="label">sensor_id</label>
+              <input
+                className="input mono"
+                value={sensorId}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSensorId(e.target.value)}
+                disabled={isEdit || saving}
+              />
+            </div>
 
-          <div style={{ gridColumn: '1 / -1' }}>
-            <label className="label">tags (coma-separado)</label>
-            <input
-              className="input"
-              value={tags}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTags(e.target.value)}
-              disabled={saving}
-            />
-          </div>
+            <div>
+              <label className="label">Tipo</label>
+              <input
+                className="input"
+                value={type}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setType(e.target.value)}
+                disabled={saving}
+              />
+            </div>
 
-          <div style={{ gridColumn: '1 / -1' }}>
-            <label className="label">script (Starlark)</label>
-            <textarea
-              className="textarea mono"
-              value={script}
-              onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setScript(e.target.value)}
-              disabled={saving}
-              style={{ minHeight: 260 }}
-            />
+            <div>
+              <label className="label">Nombre</label>
+              <input
+                className="input"
+                value={name}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)}
+                disabled={saving}
+              />
+            </div>
+
+            <div>
+              <label className="label">Activo</label>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', height: 40 }}>
+                <label className="switch">
+                  <input
+                    type="checkbox"
+                    checked={enabled}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEnabled(e.target.checked)}
+                    disabled={saving}
+                  />
+                  <span className="slider" />
+                </label>
+                <span className="sub">{enabled ? 'activo' : 'inactivo'}</span>
+              </div>
+            </div>
+
+            <div style={{ gridColumn: '1 / -1' }}>
+              <label className="label">Descripción</label>
+              <input
+                className="input"
+                value={description}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDescription(e.target.value)}
+                disabled={saving}
+              />
+            </div>
+
+            <div style={{ gridColumn: '1 / -1' }}>
+              <label className="label">Tags (separados por comas)</label>
+              <input
+                className="input"
+                value={tags}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTags(e.target.value)}
+                disabled={saving}
+              />
+            </div>
+
+            <div style={{ gridColumn: '1 / -1' }}>
+              <label className="label">script (Starlark)</label>
+              <textarea
+                className="textarea mono"
+                value={script}
+                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setScript(e.target.value)}
+                disabled={saving}
+                style={{ minHeight: 260, width: '100%', boxSizing: 'border-box' }}
+              />
+            </div>
           </div>
         </div>
 
-        <div className="modalFooter">
+        <div
+          className="modalFooter"
+          style={{
+            position: 'sticky',
+            bottom: 0,
+            background: 'var(--card-bg, #fff)',
+            borderTop: '1px solid rgba(0,0,0,0.08)',
+            padding: 16,
+            display: 'flex',
+            justifyContent: 'flex-end',
+            gap: 8,
+          }}
+        >
+          <button className="btn secondary" onClick={props.onClose} disabled={saving}>
+            Cerrar
+          </button>
           <button
             className="btn"
             disabled={saving}
@@ -764,32 +816,91 @@ function ImportModal(props: {
   const [busy, setBusy] = useState(false)
 
   return (
-    <div className="modalOverlay" role="dialog" aria-modal="true">
-      <div className="modal">
-        <div className="modalHeader">
+    <div
+      className="modalOverlay"
+      role="dialog"
+      aria-modal="true"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.35)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 16,
+        zIndex: 2000,
+        overflowY: 'auto',
+      }}
+    >
+      <div
+        className="modal"
+        style={{
+          width: 'min(1000px, 100%)',
+          maxHeight: 'calc(100vh - 32px)',
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+      >
+        <div
+          className="modalHeader"
+          style={{
+            position: 'sticky',
+            top: 0,
+            zIndex: 1,
+            background: 'var(--card-bg, #fff)',
+            padding: 16,
+            borderBottom: '1px solid rgba(0,0,0,0.08)',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'flex-start',
+            gap: 12,
+          }}
+        >
           <div>
             <div className="title">Importar nodos</div>
-            <div className="sub">Pegá un JSON con formato {"{ items: [...] }"} o directamente un array.</div>
+            <div className="sub">Pegá un JSON con formato {'{ items: [...] }'} o directamente un array.</div>
           </div>
           <button className="btn secondary" onClick={props.onClose} disabled={busy}>
             Cerrar
           </button>
         </div>
 
-        {err && <div className="error">⚠ {err}</div>}
+        <div
+          style={{
+            overflowY: 'auto',
+            padding: 16,
+            flex: 1,
+          }}
+        >
+          {err && <div className="error">⚠ {err}</div>}
 
-        <div style={{ padding: 12 }}>
           <textarea
             className="textarea mono"
             value={txt}
             onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setTxt(e.target.value)}
             placeholder='Ejemplo: {"items":[{"sensor_id":"x","script":"def on_event(event):\n  return None\n","enabled":true}]}'
-            style={{ minHeight: 260 }}
+            style={{ minHeight: 260, width: '100%', boxSizing: 'border-box' }}
             disabled={busy}
           />
         </div>
 
-        <div className="modalFooter" style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <div
+          className="modalFooter"
+          style={{
+            position: 'sticky',
+            bottom: 0,
+            background: 'var(--card-bg, #fff)',
+            borderTop: '1px solid rgba(0,0,0,0.08)',
+            padding: 16,
+            display: 'flex',
+            gap: 8,
+            justifyContent: 'flex-end',
+          }}
+        >
+          <button className="btn secondary" onClick={props.onClose} disabled={busy}>
+            Cerrar
+          </button>
           <button
             className="btn"
             disabled={busy}
@@ -799,13 +910,13 @@ function ImportModal(props: {
               try {
                 const parsed = JSON.parse(txt)
                 const items = Array.isArray(parsed) ? parsed : parsed?.items
-                if (!Array.isArray(items)) throw new Error('JSON inválido: esperaba array o {items: array}')
+                if (!Array.isArray(items)) throw new Error('JSON inválido: se esperaba un array o {items: array}')
 
-                // Validación mínima
-                const nodes = items.map((x: any) => {
-                  if (!x?.sensor_id) throw new Error('Falta sensor_id en uno de los items')
-                  if (!x?.script) throw new Error(`Falta script en ${x.sensor_id}`)
-                  return x as Partial<Node> & { sensor_id: string; script: string }
+                const nodes = items.map((x: unknown) => {
+                  const item = x as Partial<Node> & { sensor_id?: string; script?: string }
+                  if (!item?.sensor_id) throw new Error('Falta sensor_id en uno de los elementos')
+                  if (!item?.script) throw new Error(`Falta script en ${item.sensor_id}`)
+                  return item as Partial<Node> & { sensor_id: string; script: string }
                 })
 
                 await props.onImport(nodes)
